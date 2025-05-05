@@ -1,6 +1,8 @@
 from enum import Enum, auto
 from typing import Any
 
+import os
+from PIL import Image
 import torch
 from einops import rearrange
 from omegaconf import DictConfig
@@ -68,6 +70,7 @@ class DetectionVizCallback(VizCallbackBase):
                           step=global_step)
 
     def on_validation_batch_end_custom(self, batch: Any, outputs: Any):
+        print("on_validation_batch_end_custom")
         if outputs[ObjDetOutput.SKIP_VIZ]:
             return
         ev_tensor = outputs[ObjDetOutput.EV_REPR]
@@ -91,10 +94,24 @@ class DetectionVizCallback(VizCallbackBase):
         assert len(pred_imgs) == len(label_imgs)
         merged_img = []
         captions = []
+        
+        # Directory to save images locally
+        print("Saving images to local directory...")
+        # Create a directory to save the images
+        output_dir = "./validation_viz"
+        os.makedirs(output_dir, exist_ok=True)
+
         for idx, (pred_img, label_img) in enumerate(zip(pred_imgs, label_imgs)):
-            merged_img.append(rearrange([pred_img, label_img], 'pl H W C -> (pl H) W C', pl=2, C=3))
+            # Merge prediction and label images
+            merged = rearrange([pred_img, label_img], 'pl H W C -> (pl H) W C', pl=2, C=3)
+            merged_img.append(merged)
             captions.append(f'sample_{idx}')
 
+            # Save the merged image locally
+            img_path = os.path.join(output_dir, f"sample_{idx}.png")
+            Image.fromarray(merged).save(img_path)
+
+        # Log images to WandbLogger (optional)
         logger.log_images(key='val/predictions',
                           images=merged_img,
                           caption=captions)

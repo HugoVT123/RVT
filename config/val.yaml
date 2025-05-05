@@ -13,3 +13,9 @@ batch_size:
   eval: 8
 training:
   precision: 16
+logging:
+  validation:
+    high_dim:
+      enable: True
+      every_n_epochs: 1
+      n_samples: 8

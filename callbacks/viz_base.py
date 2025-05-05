@@ -1,6 +1,8 @@
 import random
+import os
 from enum import Enum
 from typing import Any, List, Optional, Type, Union
+from PIL import Image
 
 import numpy as np
 import pytorch_lightning as pl
@@ -115,8 +117,8 @@ class VizCallbackBase(Callback):
             return
         if dataloader_idx > 0:
             raise NotImplementedError
-        if not self._training_has_started:
-            # PL has a short sanity check for validation. Hence, we have to make sure that one training run is done.
+        if not self._training_has_started and not trainer.sanity_checking:
+            self._training_has_started = True  # Assume validation-only run
             return
         if not self._selected_val_batches:
             # We only want to add validation batch indices during the first true validation run.
@@ -138,12 +140,18 @@ class VizCallbackBase(Callback):
         log_val_hd = self.log_config.validation.high_dim
         log_n_samples = log_val_hd.n_samples
         log_freq_val_epochs = log_val_hd.every_n_epochs
+
+        print(f"Validation epoch {trainer.current_epoch} ended. Buffer size: {len(self._buffer)}")
+
+        print(len(self._val_batch_indices))
+        print(self._selected_val_batches)
+        print(trainer.current_epoch % log_freq_val_epochs != 0)
+
         if len(self._val_batch_indices) == 0:
             return
         if not self._selected_val_batches:
             random.seed(0)
             num_samples = min(len(self._val_batch_indices), log_n_samples)
-            # draw without replacement
             sampled_indices = random.sample(self._val_batch_indices, num_samples)
             self._val_batch_indices = sampled_indices
             self._selected_val_batches = True
@@ -153,6 +161,23 @@ class VizCallbackBase(Callback):
 
         logger: Optional[WandbLogger] = trainer.logger
         assert isinstance(logger, WandbLogger)
+
+        # Retrieve images from the buffer
+        pred_imgs = self.get_from_buffer(DetectionVizEnum.PRED_IMG_PROPH)
+        label_imgs = self.get_from_buffer(DetectionVizEnum.LABEL_IMG_PROPH)
+
+        print(pred_imgs[0].shape)
+        print(label_imgs[0].shape)
+
+        # Save or process images
+        output_dir = "./validation_viz"
+        os.makedirs(output_dir, exist_ok=True)
+        for idx, (pred_img, label_img) in enumerate(zip(pred_imgs, label_imgs)):
+            merged_img = np.concatenate((pred_img, label_img), axis=1)
+            img_path = os.path.join(output_dir, f"sample_{idx}.png")
+            Image.fromarray(merged_img).save(img_path)
+
+        # Call the custom epoch-end logic
         self.on_validation_epoch_end_custom(logger)
 
     def on_train_batch_start(

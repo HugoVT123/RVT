@@ -53,6 +53,7 @@ model:
     act: "silu"
   head:
     name: YoloX
+    num_classes: 2  # Default value, update as needed
     compile:
       enable: False
       args:
