@@ -13,11 +13,16 @@ class Mode(Enum):
     VAL = auto()
     TEST = auto()
 
+    # Custom 
+    PREDICT = auto()
+
 
 mode_2_string = {
     Mode.TRAIN: 'train',
     Mode.VAL: 'val',
     Mode.TEST: 'test',
+
+    Mode.PREDICT: 'predict'
 }
 
 

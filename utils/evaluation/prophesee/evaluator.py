@@ -61,6 +61,8 @@ class PropheseeEvaluator:
 
         labels = self._get_from_buffer(self.LABELS)
         predictions = self._get_from_buffer(self.PREDICTIONS)
+
+
         assert len(labels) == len(predictions)
         metrics = evaluate_list(result_boxes_list=predictions,
                                 gt_boxes_list=labels,
@@ -70,3 +72,18 @@ class PropheseeEvaluator:
                                 downsampled_by_2=self.downsample_by_2,
                                 camera=self.dataset)
         return metrics
+    
+    def get_buffer_predictions(self) -> Optional[List[Any]]:
+        """
+        Retrieves and returns the buffered predictions.
+        Useful for exporting or inspecting prediction results without running evaluation.
+
+        Returns:
+            List of predictions if available, otherwise None.
+        """
+        if self._buffer_empty:
+            warn("Attempt to retrieve predictions, but the buffer is empty", UserWarning, stacklevel=2)
+            return None
+
+        predictions = self._get_from_buffer(self.PREDICTIONS)
+        return predictions

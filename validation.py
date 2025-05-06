@@ -1,5 +1,7 @@
 import os
 
+
+
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -47,6 +49,8 @@ def main(config: DictConfig):
     # ---------------------
     data_module = fetch_data_module(config=config)
 
+    
+
     # ---------------------
     # Logging and Checkpoints
     # ---------------------
@@ -69,6 +73,7 @@ def main(config: DictConfig):
     # Validation
     # ---------------------
 
+
     trainer = pl.Trainer(
         accelerator='gpu',
         callbacks=callbacks,
@@ -84,6 +89,8 @@ def main(config: DictConfig):
             trainer.test(model=module, datamodule=data_module, ckpt_path=str(ckpt_path))
         else:
             trainer.validate(model=module, datamodule=data_module, ckpt_path=str(ckpt_path))
+
+            
 
 
 if __name__ == '__main__':

@@ -21,6 +21,7 @@ from callbacks.custom import get_viz_callback
 from callbacks.viz_base import VizCallbackBase
 from utils.evaluation.prophesee.visualize.vis_utils import draw_bboxes_bbv
 from data.utils.types import DataType
+import torch.nn.functional as F
 
 dtype = np.dtype([
     ('x', 'f4'), ('y', 'f4'), ('w', 'f4'), ('h', 'f4'),
@@ -98,52 +99,66 @@ def main(config: DictConfig):
         dataloader = data_module.val_dataloader()
         for batch_idx, batch in enumerate(dataloader):
             
-            # Access event representation and labels using DataType enum
+            # Access event representation using DataType enum
             event_repr = batch["data"][DataType.EV_REPR]  # Event representation
-            labels = batch["data"][DataType.OBJLABELS_SEQ]  # Ground truth labels (SparselyBatchedObjectLabels)
 
-            # Check if event representation is a list
             # Iterate over the batch
-            for seq_idx, (ev_repr, sparse_label) in enumerate(zip(event_repr, labels)):
+            for seq_idx, ev_repr in enumerate(event_repr):
                 # Remove the batch dimension and convert event representation to an image
                 print(f"Processing batch {batch_idx}, sequence {seq_idx}")
+                print(f"Shape of ev_repr before unsqueeze: {ev_repr.shape}")
+                print(f"Data type of ev_repr before conversion: {ev_repr.dtype}")
             
+                ev_repr = ev_repr.to(torch.float)
                 ev_img = VizCallbackBase.ev_repr_to_img(ev_repr.squeeze(0).cpu().numpy())
-
                 rescaled_ev_img = cv2.resize(ev_img, (ev_img.shape[1] * 4, ev_img.shape[0] * 4), interpolation=cv2.INTER_AREA)
 
-                # Check if the sparse_label is not None
-                if sparse_label is not None:
+                # Get predictions from the model
+                with torch.no_grad():
+                    print(f"Shape of ev_repr before passing to the model: {ev_repr.shape}")
+                    print(f"Data type of ev_repr before conversion: {ev_repr.dtype}")
                     
-                    # Extract valid ObjectLabels from the sparse label
-                    for obj_label in sparse_label:
-                        if obj_label is not None:
-                            print(obj_label.x, obj_label.y, obj_label.w, obj_label.h, obj_label.class_id, obj_label.class_confidence)
-                            
-                            # Convert ObjectLabels to a tensor
-                            label_array = obj_label.get_labels_as_tensors().cpu().numpy()
+                    # Convert to the correct data type (torch.float)
+                    if ev_repr.dtype != torch.float:
+                        ev_repr = ev_repr.to(torch.float)
+                        print(f"Data type of ev_repr after conversion: {ev_repr.dtype}")
+                    
+                    # Normalize the input if necessary
+                    ev_repr = ev_repr / 255.0  # Normalize to [0, 1] if required by the model
 
-                            
+                    # Pad the input tensor to make its dimensions divisible by the window size
+                    window_size = 8  # Replace with the actual window size used by your model
+                    height, width = ev_repr.shape[-2], ev_repr.shape[-1]
+                    pad_h = (window_size - height % window_size) % window_size
+                    pad_w = (window_size - width % window_size) % window_size
 
-                            # Create a structured array
-                            structured_labels = np.zeros(label_array.shape[0], dtype=[
-                                ('x', 'f4'), ('y', 'f4'), ('w', 'f4'), ('h', 'f4'),
-                                ('class_id', 'i4'), ('class_confidence', 'f4')
-                            ])
+                    # Apply padding
+                    ev_repr = F.pad(ev_repr, (0, pad_w, 0, pad_h))  # Pad (left, right, top, bottom)
+                    print(f"Shape of ev_repr after padding: {ev_repr.shape}")
 
-                            # Map the fields correctly
-                            structured_labels['class_id'] = label_array[:, 0].astype('i4')  # Object ID
-                            structured_labels['x'] = label_array[:, 1]  # Height
-                            structured_labels['y'] = label_array[:, 2]  # Width
-                            structured_labels['w'] = label_array[:, 3]  # Y-coordinate
-                            structured_labels['h'] = label_array[:, 4]  # X-coordinate
+                    # Pass the tensor to the model
+                    predictions, _, _ = module(ev_repr.to(module.device))  # Move to device
 
-                            structured_labels['x'] = structured_labels['x'] - (structured_labels['w'] / 2)
-                            structured_labels['y'] = structured_labels['y'] - (structured_labels['h'] / 2)
+                # Post-process predictions
+                pred_processed = postprocess(
+                    prediction=predictions,
+                    num_classes=config.model.head.num_classes,
+                    conf_thre=config.model.postprocess.confidence_threshold,
+                    nms_thre=config.model.postprocess.nms_threshold
+                )
 
+                # Convert predictions to a structured array
+                if pred_processed is not None:
+                    structured_labels = np.zeros(len(pred_processed), dtype=dtype)
+                    structured_labels['x'] = pred_processed[:, 0]  # x1
+                    structured_labels['y'] = pred_processed[:, 1]  # y1
+                    structured_labels['w'] = pred_processed[:, 2] - pred_processed[:, 0]  # width
+                    structured_labels['h'] = pred_processed[:, 3] - pred_processed[:, 1]  # height
+                    structured_labels['class_id'] = pred_processed[:, 6].astype('i4')  # class ID
+                    structured_labels['class_confidence'] = pred_processed[:, 5]  # confidence score
 
-                            # Draw bounding boxes
-                            rescaled_ev_img=draw_bboxes_bbv(ev_img, structured_labels)
+                    # Draw bounding boxes
+                    rescaled_ev_img = draw_bboxes_bbv(rescaled_ev_img, structured_labels)
 
                 # Save the image
                 seq_output_dir = output_dir / f"sequence_{batch_idx}"

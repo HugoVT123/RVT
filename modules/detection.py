@@ -51,6 +51,7 @@ class Module(pl.LightningModule):
         dataset_eval_sampling = self.full_config.dataset.eval.sampling
         assert dataset_train_sampling in iter(DatasetSamplingMode)
         assert dataset_eval_sampling in (DatasetSamplingMode.STREAM, DatasetSamplingMode.RANDOM)
+        print(stage)
         if stage == 'fit':  # train + val
             self.train_config = self.full_config.training
             self.train_metrics_config = self.full_config.logging.train.metrics
@@ -280,7 +281,33 @@ class Module(pl.LightningModule):
         return output
 
     def validation_step(self, batch: Any, batch_idx: int) -> Optional[STEP_OUTPUT]:
-        return self._val_test_step_impl(batch=batch, mode=Mode.VAL)
+        output = self._val_test_step_impl(batch=batch, mode=Mode.VAL)
+        
+        # Initialize storage for detections if not already done
+        if not hasattr(self, "sequence_detections"):
+            self.sequence_detections = {}
+        
+        # Extract the sequence name from the batch
+        sequence_name = batch.get('sequence_name', f'seq_{batch_idx}')  # Default to batch_idx if not available
+        
+        # Save detections for the current sequence
+        if not output[ObjDetOutput.SKIP_VIZ]:
+            detections = output[ObjDetOutput.PRED_PROPH]
+            
+            # Accumulate detections for the sequence
+            if sequence_name not in self.sequence_detections:
+                self.sequence_detections[sequence_name] = []
+            self.sequence_detections[sequence_name].append(detections)
+        
+        # Save detections for the sequence when the last batch of the sequence is processed
+        if batch.get('is_last_batch', False):  # Assuming `is_last_batch` indicates the end of a sequence
+            save_path = f"validation_logs/{sequence_name}_detections.npz"
+            combined_detections = torch.cat(self.sequence_detections[sequence_name], dim=0)  # Combine all detections
+            torch.save(combined_detections, save_path)
+            print(f"Saved detections for sequence {sequence_name} to {save_path}")
+            del self.sequence_detections[sequence_name]  # Clear memory for the sequence
+        
+        return output
 
     def test_step(self, batch: Any, batch_idx: int) -> Optional[STEP_OUTPUT]:
         return self._val_test_step_impl(batch=batch, mode=Mode.TEST)
@@ -295,8 +322,15 @@ class Module(pl.LightningModule):
         assert batch_size is not None
         assert hw_tuple is not None
         if psee_evaluator.has_data():
+
             metrics = psee_evaluator.evaluate_buffer(img_height=hw_tuple[0],
                                                      img_width=hw_tuple[1])
+            
+            predictions = psee_evaluator.get_buffer_predictions()
+            # Save predictions for the current sequence
+            sequence_name = f"sequence_{self.trainer.global_step}"
+            save_path = f"validation_logs/{sequence_name}_predictions.npz"
+            torch.save(predictions, save_path)
             assert metrics is not None
 
             prefix = f'{mode_2_string[mode]}/'
