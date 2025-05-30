@@ -21,12 +21,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import weakref
 
 import h5py
-try:
-    import hdf5plugin
-except ImportError:
-    pass
-from numba import jit
 import numpy as np
+import json
+import time
+from glob import glob
+from numba import jit
 from omegaconf import OmegaConf, DictConfig, MISSING
 import torch
 from tqdm import tqdm
@@ -115,11 +114,11 @@ class H5Writer:
 
 
 class H5Reader:
-    def __init__(self, h5_file: Path, dataset: str = 'gen4'):
+    def __init__(self, h5_file: Path, dataset: str = 'gen4', event_percent: float = 1.0):
         assert h5_file.exists()
         assert h5_file.suffix == '.h5'
         assert dataset in {'gen1', 'gen4'}
-
+        self.event_percent = event_percent
         self.h5f = h5py.File(str(h5_file), 'r')
         self._finalizer = weakref.finalize(self, self._close_callback, self.h5f)
         self.is_open = True
@@ -157,6 +156,9 @@ class H5Reader:
         assert self.is_open
         if self.all_times is None:
             self.all_times = np.asarray(self.h5f['events']['t'])
+            if self.event_percent < 1.0:
+                n_events = int(len(self.all_times) * self.event_percent)
+                self.all_times = self.all_times[:n_events]
             self._correct_time(self.all_times)
         return self.all_times
 
@@ -297,7 +299,7 @@ def get_base_delta_ts_for_labels_us(unique_label_ts_us: np.ndarray, dataset_type
     median_diff_us = np.median(diff_us)
 
     hz = int(np.rint(10 ** 6 / median_diff_us))
-    assert hz in {30, 60}, f'{hz=} but should be either 30 or 60'
+    assert hz in {20,30, 60}, f'{hz=} but should be either 30 or 60'
 
     delta_t_us_approx_10hz = int(6 * median_diff_us if hz == 60 else 3 * median_diff_us)
     return delta_t_us_approx_10hz
@@ -440,7 +442,8 @@ def write_event_data(in_h5_file: Path,
                      ev_repr_delta_ts_ms: Optional[int],
                      ev_repr_timestamps_us: np.ndarray,
                      downsample_by_2: bool,
-                     frameidx2repridx: np.ndarray) -> None:
+                     frameidx2repridx: np.ndarray,
+                     event_percent: float = 1.0):
     frameidx2repridx_file = ev_out_dir / 'objframe_idx_2_repr_idx.npy'
     if frameidx2repridx_file.exists():
         frameidx2repridx_loaded = np.load(str(frameidx2repridx_file))
@@ -461,7 +464,8 @@ def write_event_data(in_h5_file: Path,
                                 ev_repr_delta_ts_ms=ev_repr_delta_ts_ms,
                                 ev_repr_timestamps_us=ev_repr_timestamps_us,
                                 downsample_by_2=downsample_by_2,
-                                overwrite_if_exists=False)
+                                overwrite_if_exists=False,
+                                event_percent=event_percent)
 
 
 def downsample_ev_repr(x: torch.Tensor, scale_factor: float):
@@ -485,7 +489,8 @@ def write_event_representations(in_h5_file: Path,
                                 ev_repr_delta_ts_ms: Optional[int],
                                 ev_repr_timestamps_us: np.ndarray,
                                 downsample_by_2: bool,
-                                overwrite_if_exists: bool = False) -> None:
+                                overwrite_if_exists: bool = False,
+                                event_percent: float = 1.0):
     ev_outfile = ev_out_dir / f"event_representations{'_ds2_nearest' if downsample_by_2 else ''}.h5"
     if ev_outfile.exists() and not overwrite_if_exists:
         return
@@ -496,7 +501,7 @@ def write_event_representations(in_h5_file: Path,
     if downsample_by_2:
         ev_repr_shape = ev_repr_shape[0], ev_repr_shape[1] // 2, ev_repr_shape[2] // 2
     ev_repr_dtype = event_representation.get_numpy_dtype()
-    with H5Reader(in_h5_file, dataset=dataset) as h5_reader, \
+    with H5Reader(in_h5_file, dataset=dataset, event_percent=event_percent) as h5_reader, \
             H5Writer(ev_outfile_in_progress,
                      key='data',
                      ev_repr_shape=ev_repr_shape,
@@ -515,7 +520,8 @@ def write_event_representations(in_h5_file: Path,
             assert ev_repr_delta_ts_ms is not None
             start_indices = np.searchsorted(ev_ts_us, ev_repr_timestamps_us - ev_repr_delta_ts_ms * 1000, side='left')
 
-        for idx_start, idx_end in zip(start_indices, end_indices):
+        for idx_start, idx_end in tqdm(zip(start_indices, end_indices), total=len(end_indices), desc="Generating event representations"):
+
             ev_window = h5_reader.get_event_slice(idx_start=idx_start, idx_end=idx_end)
 
             ev_repr = event_representation.construct(x=ev_window['x'],
@@ -541,6 +547,7 @@ def process_sequence(dataset: str,
                      ev_repr_delta_ts_ms: Optional[int],
                      ts_step_ev_repr_ms: int,
                      downsample_by_2: bool,
+                     event_percent: float,
                      sequence_data: Dict[DataKeys, Union[Path, SplitType]]):
     in_npy_file = sequence_data[DataKeys.InNPY]
     in_h5_file = sequence_data[DataKeys.InH5]
@@ -583,7 +590,8 @@ def process_sequence(dataset: str,
                      ev_repr_delta_ts_ms=ev_repr_delta_ts_ms,
                      ev_repr_timestamps_us=ev_repr_timestamps_us,
                      downsample_by_2=downsample_by_2,
-                     frameidx2repridx=frameidx2repridx)
+                     frameidx2repridx=frameidx2repridx,
+                     event_percent=event_percent)
 
 
 class AggregationType(Enum):
@@ -691,6 +699,109 @@ def get_configuration(ev_repr_yaml_config: Path, extraction_yaml_config: Path) -
     return config
 
 
+def load_labels(label_file):
+    with open(label_file, "r") as f:
+        labels = json.load(f)
+    return labels
+
+
+def filter_bbox(labels):
+    # Vectorized: remove bboxes with non-positive width or height
+    filtered = []
+    for label in labels:
+        boxes = np.array(label['boxes'])
+        widths = boxes[:, 2]
+        heights = boxes[:, 3]
+        mask = (widths > 0) & (heights > 0)
+        label['boxes'] = boxes[mask].tolist()
+        label['classes'] = np.array(label['classes'])[mask].tolist()
+        filtered.append(label)
+    return filtered
+
+
+def process_file(h5_path, label_path, out_dir, sensor_size, start_idx):
+    print(f"Processing {h5_path}...")
+    t0 = time.time()
+
+    with h5py.File(h5_path, 'r') as f:
+        x = f["events"]["x"][:]
+        y = f["events"]["y"][:]
+        p = f["events"]["p"][:]
+        t = f["events"]["t"][:]  # timestamps
+
+    labels = load_labels(label_path)
+    labels = filter_bbox(labels)
+
+    # Convert to numpy arrays
+    x = np.array(x)
+    y = np.array(y)
+    p = np.array(p, dtype=np.int8)
+    t = np.array(t)
+
+    total_events = len(t)
+    total_labels = len(labels)
+    print(f"Total events: {total_events}, Total labels: {total_labels}")
+
+    output_data = []
+    for i, label in enumerate(labels):
+        if not label["boxes"]:
+            continue
+
+        # Extract events between this and next timestamp
+        t_start = label["timestamp"]
+        t_end = labels[i + 1]["timestamp"] if i + 1 < total_labels else t[-1] + 1
+
+        mask = (t >= t_start) & (t < t_end)
+        if not np.any(mask):
+            continue
+
+        x_slice = x[mask]
+        y_slice = y[mask]
+        p_slice = p[mask]
+        t_slice = t[mask] - t_start  # Normalize time
+
+        out_filename = os.path.join(out_dir, f"{start_idx:06d}.npz")
+        np.savez_compressed(out_filename,
+                            x=x_slice,
+                            y=y_slice,
+                            p=p_slice,
+                            t=t_slice,
+                            boxes=np.array(label["boxes"]),
+                            classes=np.array(label["classes"]),
+                            sensor_size=np.array(sensor_size))
+
+        output_data.append({
+            "file_name": f"{start_idx:06d}.npz",
+            "timestamp": int(t_start)
+        })
+
+        start_idx += 1
+
+    print(f"Saved {len(output_data)} samples in {time.time() - t0:.2f}s")
+    return output_data, start_idx
+
+
+def process_directory(event_dir, label_dir, output_dir, sensor_size=(346, 260)):
+    os.makedirs(output_dir, exist_ok=True)
+
+    all_h5 = sorted(glob(os.path.join(event_dir, "*.h5")))
+    all_labels = sorted(glob(os.path.join(label_dir, "*.json")))
+
+    assert len(all_h5) == len(all_labels), "Mismatch between events and labels"
+
+    full_metadata = []
+    start_idx = 0
+
+    for h5_file, label_file in zip(all_h5, all_labels):
+        data, start_idx = process_file(h5_file, label_file, output_dir, sensor_size, start_idx)
+        full_metadata.extend(data)
+
+    metadata_path = os.path.join(output_dir, "metadata.json")
+    with open(metadata_path, "w") as f:
+        json.dump(full_metadata, f, indent=2)
+    print(f"Saved metadata to {metadata_path}")
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('input_dir')
@@ -700,9 +811,11 @@ if __name__ == '__main__':
     parser.add_argument('bbox_filter_yaml_config', help='Path to bbox filter yaml config file')
     parser.add_argument('-ds', '--dataset', default='gen1', help='gen1 or gen4')
     parser.add_argument('-np', '--num_processes', type=int, default=1, help="Num proceesses to run in parallel")
+    parser.add_argument('--event_percent', type=float, default=1.0, help="Fraction of events to process (0.0-1.0)")
     args = parser.parse_args()
 
     num_processes = args.num_processes
+    event_percent = args.event_percent
 
     dataset = args.dataset
     assert dataset in ('gen1', 'gen4')
@@ -786,7 +899,8 @@ if __name__ == '__main__':
                        ev_repr_num_events,
                        ev_repr_delta_ts_ms,
                        ts_step_ev_repr_ms,
-                       downsample_by_2)
+                       downsample_by_2,
+                       event_percent)
         with get_context('spawn').Pool(num_processes) as pool:
             with tqdm(total=len(seq_data_list), desc='sequences') as pbar:
                 for _ in pool.imap_unordered(func, iterable=seq_data_list, chunksize=chunksize):
@@ -800,4 +914,5 @@ if __name__ == '__main__':
                              ev_repr_delta_ts_ms=ev_repr_delta_ts_ms,
                              ts_step_ev_repr_ms=ts_step_ev_repr_ms,
                              downsample_by_2=downsample_by_2,
+                             event_percent=event_percent,
                              sequence_data=entry)

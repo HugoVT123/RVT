@@ -133,3 +133,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# my ignores
+wandb
+prediction_logs
+messages

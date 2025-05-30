@@ -1,7 +1,5 @@
 import os
 
-
-
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -29,6 +27,7 @@ from modules.utils.fetch import fetch_data_module, fetch_model_module
 
 @hydra.main(config_path='config', config_name='val', version_base='1.2')
 def main(config: DictConfig):
+    
     dynamically_modify_train_config(config)
     # Just to check whether config can be resolved
     OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
@@ -74,11 +73,18 @@ def main(config: DictConfig):
     # ---------------------
 
 
+    # Determine if GPU is available
+    use_gpu = torch.cuda.is_available()
+
+    # Set accelerator and devices accordingly
+    accelerator = 'gpu' if use_gpu else 'cpu'
+    devices = gpus if use_gpu else 1
+
     trainer = pl.Trainer(
-        accelerator='gpu',
+        accelerator=accelerator,
         callbacks=callbacks,
         default_root_dir=None,
-        devices=gpus,
+        devices=devices,
         logger=logger,
         log_every_n_steps=100,
         precision=config.training.precision,

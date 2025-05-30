@@ -30,6 +30,7 @@ dtype = np.dtype([
 
 @hydra.main(config_path='config', config_name='val', version_base='1.2')
 def main(config: DictConfig):
+    print(config)
     dynamically_modify_train_config(config)
     # Just to check whether config can be resolved
     OmegaConf.to_container(config, resolve=True, throw_on_missing=True)

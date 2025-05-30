@@ -36,6 +36,7 @@ class Module(pl.LightningModule):
             Mode.TRAIN: RNNStates(),
             Mode.VAL: RNNStates(),
             Mode.TEST: RNNStates(),
+            Mode.PREDICT: RNNStates(),
         }
 
     def setup(self, stage: Optional[str] = None) -> None:
@@ -51,7 +52,7 @@ class Module(pl.LightningModule):
         dataset_eval_sampling = self.full_config.dataset.eval.sampling
         assert dataset_train_sampling in iter(DatasetSamplingMode)
         assert dataset_eval_sampling in (DatasetSamplingMode.STREAM, DatasetSamplingMode.RANDOM)
-        print(stage)
+        
         if stage == 'fit':  # train + val
             self.train_config = self.full_config.training
             self.train_metrics_config = self.full_config.logging.train.metrics
@@ -80,6 +81,13 @@ class Module(pl.LightningModule):
             self.mode_2_psee_evaluator[mode] = PropheseeEvaluator(
                 dataset=dataset_name, downsample_by_2=self.full_config.dataset.downsample_by_factor_2)
             self.mode_2_sampling_mode[Mode.TEST] = dataset_eval_sampling
+            self.mode_2_hw[mode] = None
+            self.mode_2_batch_size[mode] = None
+        elif stage == 'predict':
+            mode = Mode.PREDICT
+            self.mode_2_psee_evaluator[mode] = PropheseeEvaluator(
+                dataset=dataset_name, downsample_by_2=self.full_config.dataset.downsample_by_factor_2)  # Usually no evaluator for predict
+            self.mode_2_sampling_mode[mode] = dataset_eval_sampling
             self.mode_2_hw[mode] = None
             self.mode_2_batch_size[mode] = None
         else:
@@ -210,7 +218,7 @@ class Module(pl.LightningModule):
         data = self.get_data_from_batch(batch)
         worker_id = self.get_worker_id_from_batch(batch)
 
-        assert mode in (Mode.VAL, Mode.TEST)
+        assert mode in (Mode.VAL, Mode.TEST, Mode.PREDICT)
         ev_tensor_sequence = data[DataType.EV_REPR]
         sparse_obj_labels = data[DataType.OBJLABELS_SEQ]
         is_first_sample = data[DataType.IS_FIRST_SAMPLE]
@@ -311,6 +319,10 @@ class Module(pl.LightningModule):
 
     def test_step(self, batch: Any, batch_idx: int) -> Optional[STEP_OUTPUT]:
         return self._val_test_step_impl(batch=batch, mode=Mode.TEST)
+
+    def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Optional[STEP_OUTPUT]:
+        # Use Mode.PREDICT for prediction
+        return self._val_test_step_impl(batch=batch, mode=Mode.PREDICT)
 
     def run_psee_evaluator(self, mode: Mode):
         psee_evaluator = self.mode_2_psee_evaluator[mode]

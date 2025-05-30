@@ -9,12 +9,10 @@ from data.utils.types import BackboneFeatures, LstmStates, DatasetSamplingMode
 
 
 class Mode(Enum):
-    TRAIN = auto()
-    VAL = auto()
-    TEST = auto()
-
-    # Custom 
-    PREDICT = auto()
+    TRAIN = 0
+    VAL = 1
+    TEST = 2
+    PREDICT = 3
 
 
 mode_2_string = {
