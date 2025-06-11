@@ -418,6 +418,61 @@ def filter_zero_size_bboxes(labels):
     valid = (labels['w'] > 0) & (labels['h'] > 0)
     return labels[valid]
 
+def generate_aligned_labels_and_ev_repr_timestamps(sequence_labels, align_t_us, ts_step_ev_repr_ms=50, dataset_type='dsec'):
+    ts_step_frame_ms = 100
+    assert ts_step_frame_ms >= ts_step_ev_repr_ms
+    assert ts_step_frame_ms % ts_step_ev_repr_ms == 0
+
+    unique_ts_us = np.unique(np.asarray(sequence_labels['t'], dtype='int64'))
+    base_delta_ts_labels_us = np.median(np.diff(unique_ts_us))  # simplified alternative
+
+    unique_ts_idx_first = np.searchsorted(unique_ts_us, align_t_us, side='left')
+    frame_timestamps_us = [unique_ts_us[unique_ts_idx_first]]
+    num_ev_reprs_between_frame_ts = []
+
+    for unique_ts_idx in range(unique_ts_idx_first + 1, len(unique_ts_us)):
+        reference_time = frame_timestamps_us[-1]
+        ts = unique_ts_us[unique_ts_idx]
+        diff_to_ref = ts - reference_time
+        base_delta_count = round(diff_to_ref / base_delta_ts_labels_us)
+        diff_to_ref_rounded = base_delta_count * base_delta_ts_labels_us
+        if np.abs(diff_to_ref - diff_to_ref_rounded) <= 5000:  # jitter tolerance
+            frame_timestamps_us.append(ts)
+            num_ev_reprs_between_frame_ts.append(base_delta_count * (ts_step_frame_ms // ts_step_ev_repr_ms))
+
+    frame_timestamps_us = np.asarray(frame_timestamps_us, dtype='int64')
+
+    start_indices_per_label = np.searchsorted(sequence_labels['t'], frame_timestamps_us, side='left')
+    end_indices_per_label = np.searchsorted(sequence_labels['t'], frame_timestamps_us, side='right')
+
+    labels_per_frame = []
+    for idx_start, idx_end in zip(start_indices_per_label, end_indices_per_label):
+        labels = sequence_labels[idx_start:idx_end]
+        if len(labels) > 0:
+            labels_per_frame.append(labels)
+
+    # Generar timestamps de representaciones de eventos hacia adelante desde el primer timestamp de frame
+    ev_repr_timestamps_us_end = []
+
+    for idx, (num_ev_repr_between, start, end) in enumerate(zip(
+            num_ev_reprs_between_frame_ts, frame_timestamps_us[:-1], frame_timestamps_us[1:])):
+
+        new_ts = np.linspace(start, end, num_ev_repr_between + 1, dtype=np.int64).tolist()
+        if idx != len(num_ev_reprs_between_frame_ts) - 1:
+            new_ts = new_ts[:-1]  # Evitar duplicados
+
+        ev_repr_timestamps_us_end.extend(new_ts)
+
+    # Incluir último timestamp si solo hay un frame (caso límite)
+    if len(frame_timestamps_us) == 1:
+        ev_repr_timestamps_us_end.append(frame_timestamps_us[0])
+
+    ev_repr_timestamps_us_end = np.asarray(ev_repr_timestamps_us_end, dtype=np.int64)
+
+    frameidx_2_repridx = np.searchsorted(ev_repr_timestamps_us_end, frame_timestamps_us, side='left')
+
+    return labels_per_frame, frame_timestamps_us, ev_repr_timestamps_us_end, frameidx_2_repridx
+
 def scale_bounding_boxes(labels, scale_x=1.0, scale_y=1.0):
     labels = labels.copy()
     labels['x'] = (labels['x'] * scale_x).astype(np.int32)
@@ -481,6 +536,7 @@ dest_path = 'data/' + dataset + '_proc' + '/' + split
 
 sequences = [item for item in os.listdir(input_path) if os.path.isdir(os.path.join(input_path, item))]
 
+print(f"Processing {len(sequences)} sequences in {dataset} dataset, split {split}...")
 
 for sequence in sequences:
     
@@ -489,7 +545,7 @@ for sequence in sequences:
     
     # Inputs paths
     h5_input_path = input_path + '/' + sequence + "/events/events.h5"
-    npy_input_path = input_path + '_object_detections/' + sequence + "/object_detections/left/tracks.npy" 
+    npy_input_path = input_path + '_object_detections/' + sequence + '/object_detections/left/tracks.npy'
     h5_output_path = ev_rep_save_path + 'event_representations_ds2_nearest.h5'
 
     # --- Ensure folders exist ---
@@ -499,12 +555,13 @@ for sequence in sequences:
     # ----------------- LABELS ------------------------
     # Cargar y procesar etiquetas antes del procesamiento de eventos
     og_labels = load_labels(npy_input_path)
+    if og_labels is None:
+        print(f"Skipping sequence {sequence} due to failed label loading.")
+        continue  # or raise an error, depending on your use case
     scaled_labels = scale_bounding_boxes(og_labels, scale_x=1.0, scale_y=360/480)
-
     updated_class_ids_labels = change_class_id(scaled_labels)
     non_zero_bbox_labels = filter_zero_size_bboxes(updated_class_ids_labels)
     #filtered_labels = filter_confidence(non_zero_bbox_labels, threshold=0.01)
-
 
     last_labels = non_zero_bbox_labels
     t_min_label = last_labels['t'].min()
@@ -535,7 +592,7 @@ for sequence in sequences:
 
     # ----------------- TIMESTAMPS Y LABELS ------------------------
     # Guardar timestamps generados por las representaciones
-    generate_timestamps_us(num_frames, t_min_label, interval, save_path=ev_rep_save_path)
+    #generate_timestamps_us(num_frames, t_min_label, interval, save_path=ev_rep_save_path)
 
     # Agrupar etiquetas por timestamp
     labels_per_frame = defaultdict(list)
@@ -543,9 +600,19 @@ for sequence in sequences:
         labels_per_frame[det['t']].append(det)
 
     # Ordenar y agrupar
-    sorted_ts = sorted(labels_per_frame.keys())
-    frame_timestamps_us = np.array(sorted_ts, dtype=np.int64)
-    labels_grouped = [np.array(labels_per_frame[t], dtype=last_labels.dtype) for t in frame_timestamps_us]
+    align_t_us = int(t_min_label)  # Already calculated earlier
+
+    labels_per_frame, frame_timestamps_us, ev_repr_timestamps_us_end, frameidx_2_repridx = \
+        generate_aligned_labels_and_ev_repr_timestamps(
+            sequence_labels=last_labels,
+            align_t_us=align_t_us,
+            ts_step_ev_repr_ms=int(interval / 1000),  # your dt in ms
+            dataset_type='dsec'  # or whatever you use
+        )
+    # Save final aligned event representation timestamps
+    np.save(os.path.join(ev_rep_save_path, 'timestamps_us.npy'), ev_repr_timestamps_us_end)
+    labels_grouped =  labels_per_frame
+
 
     # Aplanar todas las etiquetas
     flat_labels = np.concatenate(labels_grouped, axis=0)
@@ -572,16 +639,10 @@ for sequence in sequences:
     print(f"First 10 objframe_idx_2_repr_idx: {objframe_idx_2_repr_idx[:10]}")  # Debugging
     np.save(os.path.join(ev_rep_save_path, 'objframe_idx_2_repr_idx.npy'), objframe_idx_2_repr_idx)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+    save_event_label_overlay(
+    events=event_data['events'],
+    labels=last_labels,
+    H=360,
+    W=640,
+    save_path=os.path.join(ev_rep_save_path, f'{sequence}_overlay.png')
+    )

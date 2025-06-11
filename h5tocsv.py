@@ -11,23 +11,30 @@ def convert_h5_to_csv(h5_file_path, csv_output_path):
         csv_output_path (str): Ruta donde se guardará el archivo .csv
     """
     with h5py.File(h5_file_path, 'r') as f:
-        x = f['/events/x'][:100]
-        y = f['/events/y'][:100]
-        p = f['/events/p'][:100]  # 0: negativa, 1: positiva
-        t = f['/events/t'][:100]
+        x = f['/events/x'][:1000]
+        y = f['/events/y'][:1000]
+        p = f['/events/p'][:1000]  # 0: negativa, 1: positiva
+        t = f['/events/t'][:]
+
+        # get rid of repeated timestamps
+        t = pd.Series(t).drop_duplicates().values
+
+        # get the last timestamp
+        t_max = t[-1] if len(t) > 0 else 0
+        
+
+        print(t_max)
+
         #t_offset = f['/t_offset'][()]
         #t = t + t_offset  # Ajustar tiempo
 
         # Crear un DataFrame
-        df = pd.DataFrame({
+        """ df = pd.DataFrame({
             'timestamp_us': t,
-            'x': x,
-            'y': y,
-            'polarity': p
-        })
+        }) """
 
         # Guardar a CSV
-        df.to_csv(csv_output_path, index=False)
+        #df.to_csv(csv_output_path, index=False)
         print(f"CSV guardado en: {csv_output_path}")
 
 def convert_proc_h5_to_csv(h5_file_path, csv_output_path):
@@ -48,13 +55,13 @@ def convert_proc_h5_to_csv(h5_file_path, csv_output_path):
 
 
 # Ejemplo de uso
-dsec_proc_h5_path = 'thun_td_scaled.h5'          # Cambia esto por tu ruta
-dsec_h5_path = 'data/dummy_dsec/test/thun_00_a_td.h5'          # Cambia esto por tu ruta
+dsec_rooth_path = 'data/dsec/test'          
+sequence =  "interlaken_00_b" 
 
-gen4_proc_og_h5_path = 'moorea_2019-02-15_001_td_183500000_243500000/event_representations_v2/stacked_histogram_dt=50_nbins=10/event_representations_ds2_nearest.h5'          # Cambia esto por tu ruta
-gen4_proc_h5_generated_path = 'output_tensor_sequence_GPU.h5'          # Cambia esto por tu ruta
+sequence_path = f"{dsec_rooth_path}/{sequence}/events/events.h5"
 
-convert_h5_to_csv('data/gen4/moorea_2019-06-11_test02_000_3111500000_3171500000_td.h5', "gen4_100.csv")  # Cambia el nombre del archivo CSV si es necesario
+
+convert_h5_to_csv(sequence_path, f"{sequence}.csv")  # Cambia el nombre del archivo CSV si es necesario
 
 
 

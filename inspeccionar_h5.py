@@ -2,6 +2,8 @@ import hdf5plugin
 import h5py
 import numpy as np
 import torch
+import cv2
+import os
 
 def inspeccionar_h5(ruta_archivo):
     """
@@ -143,14 +145,61 @@ def process_and_save_event_tensor_sequence_gpu_batched(
     print(f"\n Saved tensor sequence to: {h5_output_path}")
 
 
+def visualize_event_tensor_video(h5_path, output_dir='visuals', max_frames=100, downsample=True):
+    os.makedirs(output_dir, exist_ok=True)
+
+    with h5py.File(h5_path, 'r') as f:
+        data = f['/data']  # Shape: (N, 2*T, H, W)
+        total_frames = data.shape[0]
+        num_frames = min(max_frames, total_frames)
+        zero_count = 0
+
+        print(f"Total frames in file: {total_frames}")
+        print(f"Visualizing up to {num_frames} frames...")
+
+        for i in range(num_frames):
+            frame = data[i]  # Shape: (2*T, H, W)
+            T = frame.shape[0] // 2
+            pos = np.sum(frame[:T], axis=0)
+            neg = np.sum(frame[T:], axis=0)
+
+            if np.all(pos == 0) and np.all(neg == 0):
+                zero_count += 1
+                continue
+
+            if downsample:
+                pos = cv2.resize(pos, (640, 360), interpolation=cv2.INTER_NEAREST)
+                neg = cv2.resize(neg, (640, 360), interpolation=cv2.INTER_NEAREST)
+
+            # Normalize to 0–255
+            pos_norm = cv2.normalize(pos, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            neg_norm = cv2.normalize(neg, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+            # Create white background
+            rgb = np.ones((pos.shape[0], pos.shape[1], 3), dtype=np.uint8) * 255
+
+            # Overlay red for positive and blue for negative
+            rgb[..., 0] -= neg_norm  # Blue channel (negative events)
+            rgb[..., 1] -= neg_norm  # Reduce green for better blue contrast
+            rgb[..., 1] -= pos_norm  # Reduce green for better red contrast
+            rgb[..., 2] -= pos_norm  # Red channel (positive events)
+
+            # Save image
+            cv2.imwrite(os.path.join(output_dir, f'frame_{i:04d}.png'), rgb)
+
+        print(f"\n{zero_count} of {num_frames} frames are completely empty.")
+
 # --- Uso del script ---
 # Reemplaza 'tu_archivo.h5' con la ruta real a tu archivo.
 ruta_del_archivo_h5 = 'data/gen4_proc/train/moorea_2019-02-15_001_td_183500000_243500000/event_representations_v2/stacked_histogram_dt=50_nbins=10/event_representations_ds2_nearest.h5'  # Cambia esto por tu ruta real
 
-ruta_del_archivo_h5_2 = 'data/gen4/moorea_2019-06-11_test02_000_3111500000_3171500000_td.h5'
+ruta_del_archivo_h5_2 = 'data/dsec_proc/test/zurich_city_13_a/event_representations_v2/stacked_histogram_dt=50_nbins=10/event_representations_ds2_nearest.h5'  # Cambia esto por tu ruta real
 
-tensor_seq = process_and_save_event_tensor_sequence_gpu_batched(h5_input_path='data/dummy_dsec/test/thun_00_a_td.h5',h5_output_path='DSEC_output_tensor_sequence_GPU.h5',T=10,dt=50000,H=360,W=640,max_frames=None, verbose=True)
+ruta_del_archivo_h5_3 = 'data/1mpx_proc/scene1/event_representations_v2/stacked_histogram_dt=50_nbins=10/event_representations_ds2_nearest.h5'  # Cambia esto por tu ruta real
+#tensor_seq = process_and_save_event_tensor_sequence_gpu_batched(h5_input_path='data/dummy_dsec/test/thun_00_a_td.h5',h5_output_path='DSEC_output_tensor_sequence_GPU.h5',T=10,dt=50000,H=360,W=640,max_frames=None, verbose=True)
 
 #print(tensor_seq.shape)  # (100, 20, 360, 640)
 
-#inspeccionar_h5('output_tensor_sequence_2.h5')
+#inspeccionar_h5(ruta_del_archivo_h5_2)
+
+visualize_event_tensor_video(ruta_del_archivo_h5_2, max_frames=300)

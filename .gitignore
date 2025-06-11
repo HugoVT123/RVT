@@ -138,3 +138,5 @@ dmypy.json
 wandb
 prediction_logs
 messages
+data/rgb
+visuals

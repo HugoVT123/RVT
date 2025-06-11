@@ -1,3 +1,4 @@
 method: DURATION
 # value is in milliseconds!
-value: 100
+# value: 100
+value: 50

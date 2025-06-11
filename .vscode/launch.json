@@ -97,25 +97,6 @@
         },
 
         {
-            "name": "Preprocess DSEC",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "/home/hsosapavon/repos/RVT/scripts/genx/preprocess_dataset.py",
-            "args": [
-                "../../data/dummy_dsec",
-                "../../data/dummy_dsec_proc",
-                "conf_preprocess/representation/mixeddensity_stack.yaml",
-                "conf_preprocess/extraction/const_duration.yaml",
-                "conf_preprocess/filter_gen4.yaml",
-                "-ds", "gen4",
-                "-np", "20",
-                "--event_percent", "1.00"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "/home/hsosapavon/repos/RVT/scripts/genx"
-        },
-        
-        {
             "name": "Preprocess Gen4",
             "type": "debugpy",
             "request": "launch",
@@ -140,7 +121,31 @@
             "request": "launch",
             "program": "/home/hsosapavon/repos/RVT/scripts/genx/slice_data.py",
             "cwd": "/home/hsosapavon/repos/RVT/scripts/genx"
-        }
+        },
+
+        {
+          "name": "DSEC: Debug predict.py",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "/home/hsosapavon/repos/RVT/predict.py",
+          "args": [
+            "dataset=gen4",
+            "dataset.path=data/dsec_proc",
+            "checkpoint=checkpoints/rvt-b-gen4.ckpt",
+            "use_test_set=1",
+            "hardware.gpus=0",
+            "+experiment/gen4=base.yaml",
+            "hardware.num_workers.eval=1",
+            "batch_size.eval=1",
+            "model.postprocess.confidence_threshold=0.001"
+          ],
+          "console": "integratedTerminal",
+          "cwd": "/home/hsosapavon/repos/RVT"
+        },
+
+        
+
+
           
     ]
 }
