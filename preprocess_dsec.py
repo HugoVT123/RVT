@@ -32,8 +32,10 @@ def convert_h5_resolution(h5_input_path, h5_output_path):
         t_offset = f_in['/t_offset'][()]
         ms_to_idx = f_in['/ms_to_idx'][:]
 
-    # Escalar Y de 480 a 360
-    y_scaled = (y * 3 / 4).astype(np.int32)
+    # Escalar Y de 480 a 360 con dithering para evitar bandas
+    y_float = y * 3 / 4
+    jitter = np.random.uniform(-0.5, 0.5, size=y.shape)
+    y_scaled = np.floor(y_float + jitter).astype(np.int32)
     y_scaled = np.clip(y_scaled, 0, 359)
 
     # ✨ Escribir nuevo archivo .h5 con misma estructura
@@ -59,7 +61,10 @@ def convert_h5_resolution_in_memory(h5_input_path):
         t_offset = f_in['/t_offset'][()]
         ms_to_idx = f_in['/ms_to_idx'][:]
 
-    y_scaled = (y * 3 / 4).astype(np.int32)
+    # Escalar Y de 480 a 360 con dithering para evitar bandas
+    y_float = y * 3 / 4
+    jitter = np.random.uniform(-0.5, 0.5, size=y.shape)
+    y_scaled = np.floor(y_float + jitter).astype(np.int32)
     y_scaled = np.clip(y_scaled, 0, 359)
 
     return {

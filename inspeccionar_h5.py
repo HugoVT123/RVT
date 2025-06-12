@@ -175,14 +175,10 @@ def visualize_event_tensor_video(h5_path, output_dir='visuals', max_frames=100, 
             pos_norm = cv2.normalize(pos, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             neg_norm = cv2.normalize(neg, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
-            # Create white background
-            rgb = np.ones((pos.shape[0], pos.shape[1], 3), dtype=np.uint8) * 255
-
-            # Overlay red for positive and blue for negative
-            rgb[..., 0] -= neg_norm  # Blue channel (negative events)
-            rgb[..., 1] -= neg_norm  # Reduce green for better blue contrast
-            rgb[..., 1] -= pos_norm  # Reduce green for better red contrast
-            rgb[..., 2] -= pos_norm  # Red channel (positive events)
+            # Create RGB image: Red = positive events, Blue = negative events
+            rgb = np.zeros((pos.shape[0], pos.shape[1], 3), dtype=np.uint8)
+            rgb[..., 2] = pos_norm  # Red channel
+            rgb[..., 0] = neg_norm  # Blue channel
 
             # Save image
             cv2.imwrite(os.path.join(output_dir, f'frame_{i:04d}.png'), rgb)
@@ -195,7 +191,7 @@ ruta_del_archivo_h5 = 'data/gen4_proc/train/moorea_2019-02-15_001_td_183500000_2
 
 ruta_del_archivo_h5_2 = 'data/dsec_proc/test/zurich_city_13_a/event_representations_v2/stacked_histogram_dt=50_nbins=10/event_representations_ds2_nearest.h5'  # Cambia esto por tu ruta real
 
-ruta_del_archivo_h5_3 = 'data/1mpx_proc/scene1/event_representations_v2/stacked_histogram_dt=50_nbins=10/event_representations_ds2_nearest.h5'  # Cambia esto por tu ruta real
+ruta_del_archivo_h5_3 = ''  # Cambia esto por tu ruta real
 #tensor_seq = process_and_save_event_tensor_sequence_gpu_batched(h5_input_path='data/dummy_dsec/test/thun_00_a_td.h5',h5_output_path='DSEC_output_tensor_sequence_GPU.h5',T=10,dt=50000,H=360,W=640,max_frames=None, verbose=True)
 
 #print(tensor_seq.shape)  # (100, 20, 360, 640)

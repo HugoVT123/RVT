@@ -103,7 +103,10 @@ def convert_h5_resolution_in_memory(h5_input_path):
         t_offset = f_in['/t_offset'][()]
         ms_to_idx = f_in['/ms_to_idx'][:]
 
-    y_scaled = (y * 3 / 4).astype(np.int32)
+    # Escalar Y de 480 a 360 con dithering para evitar bandas
+    y_float = y * 3 / 4
+    jitter = np.random.uniform(-0.5, 0.5, size=y.shape)
+    y_scaled = np.floor(y_float + jitter).astype(np.int32)
     y_scaled = np.clip(y_scaled, 0, 359)
 
     return {
@@ -780,12 +783,12 @@ for sequence in sequences:
     with h5py.File(h5_output_path, 'r') as f_out:
         num_frames_in_h5 = f_out['/data'].shape[0]
         print(f"Number of frames in the output h5 file: {num_frames_in_h5}")
-    
- 
-    
 
 
-   
+
+
+
+
 
 
 
