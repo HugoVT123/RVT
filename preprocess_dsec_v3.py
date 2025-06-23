@@ -225,7 +225,6 @@ def change_class_id(labels):
 
     # Change the class_id depending on the labels
     
-    new_labels['class_id'] = np.where(new_labels['class_id'] == 2, 0, new_labels['class_id'])
 
     condition = (new_labels['class_id'] == 5) | (new_labels['class_id'] == 6)
     new_labels['class_id'] = np.where(condition, 1, new_labels['class_id'])
@@ -622,7 +621,7 @@ dt_in_ms = interval / 1000  # Convertir a milisegundos
 T = 10  # Número de bins para el histograma
 
 CHUNK_TARGET= interval
-MIN_CHUNK = 450
+MIN_CHUNK = 450 # Probably hast be 45000
 MAX_CHUNK = 55000
 
 
@@ -749,7 +748,7 @@ for sequence in sequences:
             H=360,
             W=640,
             frame_durations=new_timestamps,
-            batch_size=50,
+            batch_size=100,
             verbose=True,
             align_t_min=t_min_label
         )

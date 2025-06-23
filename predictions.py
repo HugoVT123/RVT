@@ -71,15 +71,23 @@ def visualize_event_tensor_video_with_predictions(h5_path,pred_processed_all,out
 
         print(f"\n{zero_count} of {num_frames} frames are completely empty.")
 
+
+dtype = np.dtype([
+    ('frame_idx', np.int32),
+    ('class_id', np.int8),
+    ('bbox', np.float32, (4,)),
+    ('confidence', np.float32)
+])
+
 # -------------------------------
 # Configuration & Model Loading
 # -------------------------------
 with initialize(config_path="config"):
     config = compose(config_name="val", overrides=[
-        "+experiment/gen4=default.yaml",
+        "+experiment/gen4=base.yaml",
         "checkpoint=checkpoints/rvt-b-gen4.ckpt",
         "dataset=gen4",
-        "dataset.path=data/1mpx_proc",
+        "dataset.path=data/dsec_proc",
         "use_test_set=0",
         "hardware.gpus=0",
         "batch_size=1",
@@ -100,68 +108,101 @@ model.to(device)
 # Load Event Representation
 # -------------------------------
 root_dir = "data/dsec_proc/test"
-sequence = "thun_01_b"
-h5_path = os.path.join(root_dir, sequence, "event_representations_v2/stacked_histogram_dt=50_nbins=10/event_representations_ds2_nearest.h5")
+all_sequences = [item for item in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, item))]
 
-# -------------------------------
-# Load and Process Event Frames in Batches (streamed)
-# -------------------------------
-with h5py.File(h5_path, "r") as f:
-    keys = list(f.keys())
-    print("Available datasets:", keys)
-    dataset = f[keys[0]]  # Shape: (T, C, H, W)
-    num_frames = dataset.shape[0]
-    print(f"Total frames in dataset: {num_frames}")
-
-    BATCH_SIZE = 50
-    TARGET_H = 384
-    pred_processed_all = []
-
-    for start_idx in range(0, num_frames, BATCH_SIZE):
-        end_idx = min(start_idx + BATCH_SIZE, num_frames)
-
-        # Load only the batch slice from HDF5
-        batch_np = dataset[start_idx:end_idx]  # shape: (B, C, H, W)
-        batch_tensor = torch.FloatTensor(batch_np).to(device)
-
-        # Resize
-        batch_resized = F.interpolate(batch_tensor, size=(TARGET_H, batch_tensor.shape[3]), mode='bilinear', align_corners=False)
-
-        with torch.no_grad():
-            preds, _, _ = model.forward(batch_resized)
-
-        preds_post = postprocess(
-            prediction=preds,
-            num_classes=3,
-            conf_thre=0.0001,
-            nms_thre=0.3
-        )
-
-        pred_processed_all.extend(preds_post)
-
-# -------------------------------
-# Create Video with Bounding Boxes
-# -------------------------------
-
-visualize_event_tensor_video_with_predictions(h5_path, pred_processed_all, output_dir= os.path.join("visuals",sequence), max_frames=100, downsample=True)
+#all_sequences = ["interlaken_00_b"] # DELETE BEFORE DOING AUTOMATIZATION
 
 
 
+for sequence in all_sequences:
+    print(f"Processing sequence: {sequence}")
+    h5_path = os.path.join(root_dir, sequence, "event_representations_v2/stacked_histogram_dt=50_nbins=10/event_representations_ds2_nearest.h5")
+    predictions_path = os.path.join("predictions",f"{sequence}.npy")
+
+    # -------------------------------
+    # Load and Process Event Frames in Batches (streamed)
+    # -------------------------------
+    with h5py.File(h5_path, "r") as f:
+        keys = list(f.keys())
+        print("Available datasets:", keys)
+        dataset = f[keys[0]]  # Shape: (T, C, H, W)
+        num_frames = dataset.shape[0]
+        print(f"Total frames in dataset: {num_frames}")
+
+        BATCH_SIZE = 8
+        TARGET_H = 384
+        pred_processed_all = []
+        all_predictions = []
+
+        for start_idx in range(0, num_frames, BATCH_SIZE):
+            end_idx = min(start_idx + BATCH_SIZE, num_frames)
+
+            # Load only the batch slice from HDF5
+            batch_np = dataset[start_idx:end_idx]  # shape: (B, C, H, W)
+            batch_tensor = torch.FloatTensor(batch_np).to(device)
+
+            # Resize
+            batch_resized = F.interpolate(batch_tensor, size=(TARGET_H, batch_tensor.shape[3]), mode='bicubic', align_corners=False)
+
+            with torch.no_grad():
+                preds, _, _ = model.forward(batch_resized)
+
+            preds_post = postprocess(
+                prediction=preds,
+                num_classes=3,
+                conf_thre=0.1,
+                nms_thre=0.45
+            )
+
+            pred_processed_all.extend(preds_post)
+
+            
+            for frame_idx in range(0,len(pred_processed_all)):  # Inclusive
+                
+                detections = pred_processed_all[frame_idx]
+
+                # Only draw boxes if detections exist
+                if detections is not None:
+                    for obj in detections:
+                        x1, y1, x2, y2, obj_conf, class_conf, class_pred = obj
+                        scale_y = 360/384 
+                        
+
+                        x1, y1, x2, y2 = float(x1), float(y1*scale_y), float(x2), float(y2*scale_y)
+
+                        frame_idx = int(frame_idx)
+                        confidence = float(class_conf)
+                        class_pred = int(class_pred)
 
 
-if False:
-    first_frame = 725
-    final_frame = 821
-    for frame_idx in range(first_frame, final_frame):  # Inclusive
-    
-        detections = pred_processed_all[frame_idx - first_frame]
+                        
+                        all_predictions.append({
+                            "frame_idx": frame_idx,
+                            "class_id": class_pred,
+                            "bbox": [x1, y1, x2, y2],
+                            "confidence": class_conf
+                        })
 
-        # Only draw boxes if detections exist
-        if detections is not None:
-            for obj in detections:
-                x1, y1, x2, y2, obj_conf, class_conf, class_pred = obj
-                w = x2 - x1
-                h = y2 - y1
+        structured_array = np.array([
+            (p["frame_idx"], p["class_id"], p["bbox"], p["confidence"])
+            for p in all_predictions
+        ], dtype=dtype)
+
+        np.savez_compressed(predictions_path.replace(".npy", ".npz"), predictions=structured_array)
+
+                        
+
+    # -------------------------------
+    # Create Video with Bounding Boxes
+    # -------------------------------
+
+    #visualize_event_tensor_video_with_predictions(h5_path, pred_processed_all, output_dir= os.path.join("visuals",sequence), max_frames=100, downsample=True)
+
+
+
+
+
+
             
                 
 
