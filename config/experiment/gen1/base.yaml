@@ -5,6 +5,7 @@ defaults:
 model:
   backbone:
     embed_dim: 64
-    in_res_hw: [240, 304]  # Replace with the correct resolution for your dataset
+    in_res_hw: [180, 320]
+    #in_res_hw: [240, 304]  # Replace with the correct resolution for your dataset
   fpn:
     depth: 0.67

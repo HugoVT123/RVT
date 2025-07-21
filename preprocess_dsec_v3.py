@@ -8,29 +8,9 @@ from collections import defaultdict
 import os
 import shutil
 import io
+from scripts.my_toolbox import get_number_of_rgb_frames
+import tqdm
 
-
-def get_number_of_rgb_frames(sequence):
-    switcher = {
-        'interlaken_00_a': 1143,
-        'interlaken_00_b': 1617, 
-        'interlaken_01_a': 2263, 
-        'thun_01_a': 197, 
-        'thun_01_b': 1079, 
-        'thun_02_a': 3901, 
-        'zurich_city_12_a': 765, 
-        'zurich_city_13_a': 379, 
-        'zurich_city_13_b': 315, 
-        'zurich_city_14_a': 439, 
-        'zurich_city_14_b': 577, 
-        'zurich_city_14_c': 1191, 
-        'zurich_city_15_a': 1239,
-    }
-    # Return the corresponding integer for the string, or a default value if the string is not found
-    # If the sequence is not found, return 0 or handle it as needed
-    if sequence not in switcher:
-        print(f"Warning: Sequence '{sequence}' not found in switcher. Returning default value of 0.")
-    return switcher.get(sequence, 0)  # Default is 0 if the case is not found
 
 def adaptive_process_and_save_event_tensor_sequence(
     h5_file, h5_output_path, t_min, new_timestamps, T=10, H=360, W=640, verbose=False):
@@ -252,7 +232,7 @@ def process_and_save_event_tensor_sequence_gpu_batched(
     H=360,
     W=640,
     max_frames=None,
-    batch_size=10,
+    batch_size=250,
     verbose=False,
     align_t_min=None
 ):
@@ -615,6 +595,7 @@ def process_and_save_event_tensor_sequence_gpu_variable_dt(
     print(f"\nSaved tensor sequence to: {h5_output_path}")
     return num_frames, t_min
 
+
 # ----------------- PIPELINE -----------------------
 interval = 50000  # Intervalo de tiempo entre frames en microsegundos
 dt_in_ms = interval / 1000  # Convertir a milisegundos
@@ -634,6 +615,7 @@ dest_path = 'data/' + dataset + '_proc' + '/' + split
 
 sequences = [item for item in os.listdir(input_path) if os.path.isdir(os.path.join(input_path, item))]
 
+sequences = ["interlaken_00_d"]
 
 for sequence in sequences:
     print(f"Processing sequence: {sequence}")
@@ -662,32 +644,50 @@ for sequence in sequences:
 
     unprocessed_labels = non_zero_bbox_labels.copy()
     differences = np.diff(unprocessed_labels["t"])
+    print(len(differences))
     timestamps_for_events = differences[differences != 0]
 
     new_timestamps = []
 
+    print(timestamps_for_events)
+
+    MAX_ITER = 100000  # safeguard to prevent true infinite loops
+
     for ts in timestamps_for_events:
         ts = int(ts)  # Ensure it's a native Python int
+        #print(f"\nProcessing timestamp: {ts} µs")
 
         if ts <= 50500:
             new_timestamps.append(ts)  # flat append ✅
+            #print(f"Flat append: {ts}")
             continue
 
         num_chunks = ts // CHUNK_TARGET
         if num_chunks < 1:
             num_chunks = 1
 
+        #print(f"Initial num_chunks: {num_chunks}")
+        
+        iter_count = 0  # safeguard counter
         while True:
+            iter_count += 1
+            if iter_count > MAX_ITER:
+                #print("⚠️ Max iterations hit! Likely infinite loop.")
+                break
+
             chunk_size = ts / num_chunks
+            #print(f"  Iter {iter_count}: chunk_size={chunk_size:.2f}, num_chunks={num_chunks}")
 
             if MIN_CHUNK <= chunk_size <= MAX_CHUNK:
-                chunks = [chunk_size] * num_chunks
-                chunks = [int(round(c)) for c in chunks]
-                chunks[-1] += ts - sum(chunks)
-                new_timestamps.extend(chunks)  # flat extend ✅
+                #print(f"✅ Valid chunk size in range. chunk_size={chunk_size:.2f}")
+                for i in range(num_chunks):
+                    this_chunk = int(round(chunk_size))
+                    if i == num_chunks - 1:
+                        this_chunk += ts - this_chunk * num_chunks
+                    new_timestamps.append(this_chunk)
                 break
-            else:
-                num_chunks += 1
+
+            num_chunks += 1  # increase until chunk_size is within the desired range
 
     start_timestamp = unprocessed_labels["t"][0]
     # Compute cumulative timestamps from differences
@@ -745,10 +745,10 @@ for sequence in sequences:
             h5_file=h5_file,
             h5_output_path=h5_output_path,
             T=T,
-            H=360,
+            H=384,
             W=640,
             frame_durations=new_timestamps,
-            batch_size=100,
+            batch_size=150,
             verbose=True,
             align_t_min=t_min_label
         )

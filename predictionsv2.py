@@ -9,6 +9,7 @@ from config.modifier import dynamically_modify_train_config
 from modules.detection import Module
 from models.detection.yolox.utils import postprocess
 import os
+from utils import padding
 
 dtype = np.dtype([
     ('frame_idx', np.int32),
@@ -47,7 +48,7 @@ model.to(device)
 root_dir = "data/dsec_proc/test"
 all_sequences = [item for item in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, item))]
 
-all_sequences = ["interlaken_00_b"] # DELETE BEFORE DOING AUTOMATIZATION
+#all_sequences = ["interlaken_00_b"] # DELETE BEFORE DOING AUTOMATIZATION
 
 
 for sequence in all_sequences:
@@ -89,6 +90,8 @@ for sequence in all_sequences:
             batch_tensor = torch.FloatTensor(batch_np).to(device)
 
             # Resize
+            
+            #batch_resized = model.input_padder.pad_tensor_ev_repr(batch_tensor)
             batch_resized = F.interpolate(batch_tensor, size=(TARGET_H, batch_tensor.shape[3]), mode='bicubic', align_corners=False)
 
             with torch.no_grad():
@@ -97,13 +100,14 @@ for sequence in all_sequences:
                 preds, _, new_rnn_states = model.forward(batch_resized, previous_states=current_rnn_states)
                 
                 # Update the states for the next iteration
-                current_rnn_states = new_rnn_states
+                if new_rnn_states != None:
+                    current_rnn_states = new_rnn_states
 
             preds_post = postprocess(
                 prediction=preds,
                 num_classes=3,
                 conf_thre=0.1,
-                nms_thre=0.45
+                nms_thre=0.01
             )
 
             # pred_processed_all will accumulate a list of lists of detections.
