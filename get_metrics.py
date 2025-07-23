@@ -1,11 +1,16 @@
 import os
 import numpy as np
-from collections import defaultdict
 from tqdm import tqdm
 import os
-import h5py
-from scripts.my_toolbox import *
 import csv
+from utils.helpers import get_number_of_rgb_frames, filter_pred_by_confidence
+from utils.conversion import get_rgb_by_frame, convert_predictions, convert_gt
+from utils.fusion import apply_nms_to_frame
+from utils.fusion import weighted_fusion
+from tracking.byte_tracker import tracking_bytetrack
+from metrics.motmetrics_eval import evaluate_motmetrics
+from utils.visualization import process_drawn_images, process_drawn_tracked_images 
+
 
 
 SCALE_Y = 360 / 480  # = 0.75
@@ -92,20 +97,14 @@ with open(csv_path, mode='a', newline='') as file:
         rgb_bboxes_filtered = filter_pred_by_confidence(rgb_bboxes, {0: 0.05, 1: 0.1})
         event_bboxes_filtered = filter_pred_by_confidence(event_bboxes,{0: 0.001, 1: 0.001})
 
-        
-
-
-        # DELETE THIS AFTER GETTIN THE IMAGES
-        #gt_bboxes = {}
-        #event_bboxes_filtered = {}
-        #rgb_bboxes_filtered = {}
+    
 
 
         print('------------------RGB & Event Detections----------------')
         
         #generate_metrics_csv(sequence_name,rgb_bboxes_filtered,event_bboxes_filtered,confidence_thresholds,gt_bboxes)
 
-        #process_drawn_images(sequence_name,gt_bboxes,rgb_bboxes_filtered,event_bboxes_filtered,weights=[1.0,0.35])
+        process_drawn_images(sequence_name,gt_bboxes,rgb_bboxes_filtered,event_bboxes_filtered,weights=[1.0,0.35])
 
         #create_video_from_frames(os.path.join('visuals/drawn',sequence_name),os.path.join('visuals/videos',f'{sequence_name}.mp4'))
 
@@ -117,7 +116,7 @@ with open(csv_path, mode='a', newline='') as file:
         #merged_bboxes_filtered = filter_pred_by_confidence(merged_bboxes, {0: 0.5, 1: 0.5})
 
         #generate_metrics_csv(sequence_name,merged_bboxes,merged_bboxes,confidence_thresholds,gt_bboxes)
-        #process_drawn_images(sequence_name,gt_bboxes,merged_bboxes,{},weights=[1.0,0.35])
+        process_drawn_images(sequence_name,gt_bboxes,merged_bboxes,{},weights=[1.0,0.35])
 
         #create_video_from_frames(os.path.join('visuals/drawn',sequence_name),os.path.join('visuals/videos',f'{sequence_name}_fused.mp4'))
 
@@ -140,7 +139,7 @@ with open(csv_path, mode='a', newline='') as file:
                 "hybrid": evaluate_motmetrics(gt_by_frame, merged_tracked_by_frame)
             }
 
-            #process_drawn_tracked_images(sequence_name,merged_tracked_by_frame,frame_weight=1.0,event_weight=0.35)
+            process_drawn_tracked_images(sequence_name,merged_tracked_by_frame,frame_weight=1.0,event_weight=0.35)
 
             # Write results
             for tipo, class_summaries in tracking_results.items():

@@ -48,7 +48,7 @@ model.to(device)
 root_dir = "data/dsec_proc/test"
 all_sequences = [item for item in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, item))]
 
-#all_sequences = ["interlaken_00_b"] # DELETE BEFORE DOING AUTOMATIZATION
+all_sequences = ["interlaken_00_b"] # DELETE BEFORE DOING AUTOMATIZATION
 
 
 for sequence in all_sequences:

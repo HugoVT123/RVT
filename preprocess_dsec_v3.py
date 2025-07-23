@@ -4,31 +4,24 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
-from collections import defaultdict
 import os
-import shutil
 import io
-from scripts.my_toolbox import get_number_of_rgb_frames
-import tqdm
-
+from utils.helpers import get_number_of_rgb_frames
+from tqdm import tqdm
 
 def adaptive_process_and_save_event_tensor_sequence(
     h5_file, h5_output_path, t_min, new_timestamps, T=10, H=360, W=640, verbose=False):
-
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     if verbose:
         print(f"Using device: {device}")
-
     x = h5_file['events/x'][:]
     y = h5_file['events/y'][:]
     t = h5_file['events/t'][:].astype(np.int64)
     p = h5_file['events/p'][:]
     p = ((p + 1) // 2).astype(np.uint8)
-
     cum_timestamps = np.cumsum([0] + new_timestamps)
     cum_timestamps += t_min
     num_frames = len(new_timestamps)
-
     with h5py.File(h5_output_path, 'w') as f_out:
         dset = f_out.create_dataset(
             '/data',
@@ -37,44 +30,34 @@ def adaptive_process_and_save_event_tensor_sequence(
             chunks=(1, 2 * T, H, W),
             **hdf5plugin.Blosc(cname='lz4', clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE)
         )
-
-        for i in range(num_frames):
+        for i in tqdm(range(num_frames), desc="Processing Frames"): # Add tqdm here
             t_start = cum_timestamps[i]
             t_end = cum_timestamps[i + 1]
             mask = (t >= t_start) & (t < t_end)
             if not np.any(mask):
                 continue
-
             x_slice = torch.from_numpy(x[mask].astype(np.int32)).to(device)
             y_slice = torch.from_numpy(y[mask].astype(np.int32)).to(device)
             t_slice = torch.from_numpy(t[mask].astype(np.int64)).to(device)
             p_slice = torch.from_numpy(p[mask]).to(device)
-
             rel_t = t_slice - t_start
             frame_dt = t_end - t_start
             bin_idx = ((rel_t % frame_dt) * T // frame_dt).long()
             bin_idx = torch.clamp(bin_idx, 0, T - 1)
             ch_idx = p_slice * T + bin_idx
-
             valid = (x_slice >= 0) & (x_slice < W) & (y_slice >= 0) & (y_slice < H)
             x_valid = x_slice[valid]
             y_valid = y_slice[valid]
             ch_valid = ch_idx[valid]
-
             tensor = torch.zeros(2 * T, H, W, dtype=torch.int32, device=device)
             for x_v, y_v, ch_v in zip(x_valid, y_valid, ch_valid):
                 tensor[ch_v, y_v, x_v] += 1
-
             tensor = torch.clamp(tensor, max=255).to(torch.uint8).cpu().numpy()
             dset[i] = tensor
-
-            if verbose:
-                print(f"Frame {i}/{num_frames - 1} written, duration: {frame_dt} µs")
-
+            
     return cum_timestamps[1:]
 
 def convert_h5_resolution_in_memory(h5_input_path):
-
     with h5py.File(h5_input_path, 'r') as f_in:
         x = f_in['/events/x'][:]
         y = f_in['/events/y'][:]
@@ -82,13 +65,11 @@ def convert_h5_resolution_in_memory(h5_input_path):
         t = f_in['/events/t'][:]
         t_offset = f_in['/t_offset'][()]
         ms_to_idx = f_in['/ms_to_idx'][:]
-
     # Escalar Y de 480 a 360 con dithering para evitar bandas
     y_float = y * 3 / 4
     jitter = np.random.uniform(-0.5, 0.5, size=y.shape)
     y_scaled = np.floor(y_float + jitter).astype(np.int32)
     y_scaled = np.clip(y_scaled, 0, 359)
-
     return {
         'events': {
             'x': x.astype(np.uint16),
@@ -103,7 +84,6 @@ def convert_h5_resolution_in_memory(h5_input_path):
 def save_event_image(h5_file_path, output_path, num_events=50000, resolution=(640, 480)):
     """
     Extrae y guarda una imagen de eventos (sin plot) desde el centro del archivo .h5.
-
     Parámetros:
         h5_file_path (str): Ruta al archivo .h5
         output_path (str): Ruta donde se guardará la imagen
@@ -117,23 +97,18 @@ def save_event_image(h5_file_path, output_path, num_events=50000, resolution=(64
         t = f['/events/t'][:]
         t_offset = f['/t_offset'][()]
         t = t + t_offset
-
     total_events = len(x)
     start = total_events // 2 - num_events // 2
     end = start + num_events
-
     x = x[start:end]
     y = y[start:end]
     p = p[start:end]
-
     # Crear imagen en blanco
     w, h = resolution
     event_image = np.zeros((h, w), dtype=np.int16)
-
     for xi, yi, pi in zip(x, y, p):
         if 0 <= xi < w and 0 <= yi < h:
             event_image[yi, xi] += 1 if pi else -1
-
     # Crear figura sin bordes ni ejes
     fig = plt.figure(frameon=False)
     fig.set_size_inches(w / 100, h / 100)
@@ -141,7 +116,6 @@ def save_event_image(h5_file_path, output_path, num_events=50000, resolution=(64
     ax.set_axis_off()
     fig.add_axes(ax)
     ax.imshow(event_image, cmap='bwr', vmin=-5, vmax=5)
-
     fig.savefig(output_path, dpi=100, bbox_inches='tight', pad_inches=0)
     plt.close(fig)
     print(f"Imagen de eventos guardada en: {output_path}")
@@ -150,7 +124,6 @@ def scale_y_coordinate(labels, original_height, new_height):
     
     new_labels = labels.copy()
     scale_factor = new_height / original_height
-
     # Scale the 'y' coordinate
     # Ensure 'y' field is numeric before scaling, though <f4> in dtype implies it is.
     if np.issubdtype(new_labels['y'].dtype, np.number):
@@ -161,16 +134,13 @@ def scale_y_coordinate(labels, original_height, new_height):
         print(f"Warning: 'y' field (dtype: {new_labels['y'].dtype}) is not numeric. Skipping scaling.")
         # Save the unmodified array if 'y' is not numeric to prevent errors
         return
-
     return new_labels
 
 def load_labels(npy_input_path):
     """
     Carga las etiquetas desde un archivo .npy.
-
     Parámetros:
         npy_input_path (str): Ruta al archivo .npy
-
     Retorna:
         np.ndarray: Array de etiquetas cargado
     """
@@ -182,7 +152,6 @@ def load_labels(npy_input_path):
     except Exception as e:
         print(f"Error loading NPY file {npy_input_path}: {e}")
         return
-
     # Basic validation for the expected structured array format
     if not (labels.ndim == 1 and labels.dtype.fields and 'y' in labels.dtype.names):
         print(f"Error: Input NPY file at {npy_input_path} does not contain a 1D structured array "
@@ -194,131 +163,18 @@ def load_labels(npy_input_path):
     return labels
 
 def change_class_id(labels):
-
     # acces to class_id of npy_input_path
     
     # Label with the new class_ids
     new_labels = labels.copy()
-
     # Remove rows where class_id is 1,3,4 or 7
     new_labels = new_labels[np.isin(new_labels['class_id'], [0,1,2])]
-
     # Change the class_id depending on the labels
     
-
     condition = (new_labels['class_id'] == 5) | (new_labels['class_id'] == 6)
     new_labels['class_id'] = np.where(condition, 1, new_labels['class_id'])
-
     return new_labels
     
-def filter_confidence(labels, threshold=0.5):
-    """
-    Filtra las etiquetas basadas en un umbral de confianza.
-
-    Parámetros:
-        labels (np.ndarray): Array de etiquetas con campo 'confidence'
-        threshold (float): Umbral de confianza para filtrar
-
-    Retorna:
-        np.ndarray: Array filtrado de etiquetas
-    """
-    return labels[labels['class_confidence'] >= threshold]
-    
-def process_and_save_event_tensor_sequence_gpu_batched(
-    h5_input_path,
-    h5_output_path='output_tensor_sequence.h5',
-    T=10,
-    dt=50000,
-    H=360,
-    W=640,
-    max_frames=None,
-    batch_size=250,
-    verbose=False,
-    align_t_min=None
-):
-    if align_t_min is None:
-        raise ValueError("align_t_min must be provided to ensure event/label alignment.")
-    t_min = align_t_min
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    if verbose:
-        print(f"Using device: {device}")
-
-    with h5py.File(h5_input_path, 'r') as f_in:
-        x = f_in['events/x'][:]
-        y = f_in['events/y'][:]
-        t = f_in['events/t'][:].astype(np.int64)  
-        p = f_in['events/p'][:]
-        p = ((p + 1) // 2).astype(np.uint8)
-
-        t_min, t_max = t.min(), t.max()
-        total_duration = t_max - t_min
-        num_frames = total_duration // dt
-
-        if max_frames is not None:
-            num_frames = min(num_frames, max_frames)
-
-        if verbose:
-            print(f"Processing {num_frames} frames from {t_min} to {t_max} µs")
-
-        with h5py.File(h5_output_path, 'w') as f_out:
-            dset = f_out.create_dataset(
-                '/data',
-                shape=(num_frames, 2 * T, H, W),
-                dtype='uint8',
-                chunks=(1, 2 * T, H, W),
-                **hdf5plugin.Blosc(cname='lz4', clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE)
-            )
-
-            for batch_start in range(0, num_frames, batch_size):
-                batch_end = min(batch_start + batch_size, num_frames)
-                actual_batch_size = batch_end - batch_start
-
-                t_batch_start = t_min + batch_start * dt
-                t_batch_end = t_min + batch_end * dt
-
-                # Get only events in this batch window
-                mask = (t >= t_batch_start) & (t < t_batch_end)
-                if not np.any(mask):
-                    continue
-
-                x_slice = torch.from_numpy(x[mask].astype(np.int32)).to(device)
-                y_slice = torch.from_numpy(y[mask].astype(np.int32)).to(device)
-                t_slice = torch.from_numpy(t[mask].astype(np.int64)).to(device)  
-                p_slice = torch.from_numpy(p[mask]).to(device)
-
-                rel_t = t_slice - t_batch_start
-                frame_idx = (rel_t // dt).long()
-                bin_idx = ((rel_t % dt) * T // dt).long()
-                bin_idx = torch.clamp(bin_idx, 0, T - 1)
-
-                ch_idx = p_slice * T + bin_idx
-
-                valid = (x_slice >= 0) & (x_slice < W) & (y_slice >= 0) & (y_slice < H)
-                x_valid = x_slice[valid]
-                y_valid = y_slice[valid]
-                ch_valid = ch_idx[valid]
-                f_valid = frame_idx[valid]
-
-                flat_idx = (
-                    f_valid * (2 * T * H * W)
-                    + ch_valid * (H * W)
-                    + y_valid * W
-                    + x_valid
-                ).long()
-
-                tensor_flat = torch.zeros(actual_batch_size * 2 * T * H * W, dtype=torch.int32, device=device)
-                tensor_flat.scatter_add_(0, flat_idx, torch.ones_like(flat_idx, dtype=torch.int32))
-                tensor_batch = tensor_flat.view(actual_batch_size, 2 * T, H, W)
-                tensor_batch = torch.clamp(tensor_batch, max=255).to(torch.uint8).cpu().numpy()
-
-                dset[batch_start:batch_end] = tensor_batch
-
-                if verbose:
-                    print(f"Frames {batch_start}–{batch_end - 1} written")
-
-    print(f"\n Saved tensor sequence to: {h5_output_path}")
-    return num_frames,t_min
-
 def write_event_data_to_memory_h5(data_dict):
     buffer = io.BytesIO()
     with h5py.File(buffer, 'w') as f:
@@ -332,107 +188,11 @@ def write_event_data_to_memory_h5(data_dict):
     buffer.seek(0)
     return buffer
 
-def process_and_save_event_tensor_sequence_gpu_batched_from_file(
-    h5_file,
-    h5_output_path='output_tensor_sequence.h5',
-    T=10,
-    dt=50000,
-    H=360,
-    W=640,
-    max_frames=None,
-    batch_size=10,
-    verbose=False,
-    align_t_min=None
-):
-    if align_t_min is None:
-        raise ValueError("align_t_min must be provided to ensure event/label alignment.")
-    t_min = align_t_min
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    if verbose:
-        print(f"Using device: {device}")
-
-    # Leer desde el archivo abierto (h5_file en lugar de ruta)
-    x = h5_file['events/x'][:]
-    y = h5_file['events/y'][:]
-    t = h5_file['events/t'][:].astype(np.int64)
-    p = h5_file['events/p'][:]
-    p = ((p + 1) // 2).astype(np.uint8)
-
-    t_min, t_max = t.min(), t.max()
-    total_duration = t_max - t_min
-    num_frames = total_duration // dt
-
-    if max_frames is not None:
-        num_frames = min(num_frames, max_frames)
-
-    if verbose:
-        print(f"Processing {num_frames} frames from {t_min} to {t_max} µs")
-
-    with h5py.File(h5_output_path, 'w') as f_out:
-        dset = f_out.create_dataset(
-            '/data',
-            shape=(num_frames, 2 * T, H, W),
-            dtype='uint8',
-            chunks=(1, 2 * T, H, W),
-            **hdf5plugin.Blosc(cname='lz4', clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE)
-        )
-
-        for batch_start in range(0, num_frames, batch_size):
-            batch_end = min(batch_start + batch_size, num_frames)
-            actual_batch_size = batch_end - batch_start
-
-            t_batch_start = t_min + batch_start * dt
-            t_batch_end = t_min + batch_end * dt
-
-            mask = (t >= t_batch_start) & (t < t_batch_end)
-            if not np.any(mask):
-                continue
-
-            x_slice = torch.from_numpy(x[mask].astype(np.int32)).to(device)
-            y_slice = torch.from_numpy(y[mask].astype(np.int32)).to(device)
-            t_slice = torch.from_numpy(t[mask].astype(np.int64)).to(device)
-            p_slice = torch.from_numpy(p[mask]).to(device)
-
-            rel_t = t_slice - t_batch_start
-            frame_idx = (rel_t // dt).long()
-            bin_idx = ((rel_t % dt) * T // dt).long()
-            bin_idx = torch.clamp(bin_idx, 0, T - 1)
-
-            ch_idx = p_slice * T + bin_idx
-
-            valid = (x_slice >= 0) & (x_slice < W) & (y_slice >= 0) & (y_slice < H)
-            x_valid = x_slice[valid]
-            y_valid = y_slice[valid]
-            ch_valid = ch_idx[valid]
-            f_valid = frame_idx[valid]
-
-            flat_idx = (
-                f_valid * (2 * T * H * W)
-                + ch_valid * (H * W)
-                + y_valid * W
-                + x_valid
-            ).long()
-
-            tensor_flat = torch.zeros(actual_batch_size * 2 * T * H * W, dtype=torch.int32, device=device)
-            tensor_flat.scatter_add_(0, flat_idx, torch.ones_like(flat_idx, dtype=torch.int32))
-            tensor_batch = tensor_flat.view(actual_batch_size, 2 * T, H, W)
-            tensor_batch = torch.clamp(tensor_batch, max=255).to(torch.uint8).cpu().numpy()
-
-            dset[batch_start:batch_end] = tensor_batch
-
-            if verbose:
-                print(f"Frames {batch_start}–{batch_end - 1} written")
-
-    print(f"\nSaved tensor sequence to: {h5_output_path}")
-    return num_frames, t_min
-
 def filter_zero_size_bboxes(labels):
     """
     Elimina etiquetas con bounding boxes que tienen ancho o alto igual a cero.
-
     Parámetros:
         labels (np.ndarray): Array de etiquetas con campos 'w' y 'h'
-
     Retorna:
         np.ndarray: Array de etiquetas filtradas
     """
@@ -468,18 +228,15 @@ def save_event_label_overlay(
     x = events['x']
     y = events['y']
     frame[y, x] = 255  # Simple binary frame
-
     # Crear figura
     fig, ax = plt.subplots(figsize=(W/100, H/100), dpi=100)
     ax.imshow(frame, cmap='gray')
-
     for det in labels[:num_labels]:
         rect = plt.Rectangle(
             (det['x'], det['y']), det['w'], det['h'],
             edgecolor='red', facecolor='none', linewidth=1
         )
         ax.add_patch(rect)
-
     ax.axis('off')
     plt.tight_layout(pad=0)
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -487,11 +244,11 @@ def save_event_label_overlay(
     plt.close()
     print(f"Saved overlay to {save_path}")
 
-def process_and_save_event_tensor_sequence_gpu_variable_dt(
+def process_and_save_event_tensor_sequence(
     h5_file,
     h5_output_path='output_tensor_sequence.h5',
     T=10,
-    frame_durations=None,  # <- NEW: array of durations like [55420, 48500, ...]
+    frame_durations=None,
     H=360,
     W=640,
     batch_size=10,
@@ -502,29 +259,30 @@ def process_and_save_event_tensor_sequence_gpu_variable_dt(
         raise ValueError("align_t_min must be provided to ensure event/label alignment.")
     if frame_durations is None:
         raise ValueError("frame_durations must be provided as a list or array of frame durations in µs.")
-
+    
     frame_durations = np.array(frame_durations, dtype=np.int64)
     num_frames = len(frame_durations)
 
-    # Load timestamps before calculating t_min
-    t = h5_file['events/t'][:].astype(np.int64)
+    # --- Debugging Event Timestamps ---
+    # ... (código existente de depuración) ...
+    # --- End Debugging Block ---
 
     # Adjust t_min using actual event timestamps
-    t_min = t.min()
-
+    t = h5_file['events/t'][:].astype(np.int64) # Cargar 't' solo una vez
+    
+    # Comprobación de alineación
     if align_t_min > t.max():
         raise ValueError(f"align_t_min ({align_t_min}) is after last event timestamp ({t.max()}) — no events will be processed.")
-
-
+    
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     if verbose:
         print(f"Using device: {device}")
-
-    x = h5_file['events/x'][:]
-    y = h5_file['events/y'][:]
-    t = h5_file['events/t'][:].astype(np.int64)
-    p = h5_file['events/p'][:]
-    p = ((p + 1) // 2).astype(np.uint8)
+    
+    # Cargar todos los eventos necesarios una sola vez al inicio
+    x_all = h5_file['events/x'][:]
+    y_all = h5_file['events/y'][:]
+    p_all = h5_file['events/p'][:]
+    p_all = ((p_all + 1) // 2).astype(np.uint8) # Pre-procesar polaridad
 
     if verbose:
         print(f"Processing {num_frames} variable-duration frames")
@@ -537,85 +295,132 @@ def process_and_save_event_tensor_sequence_gpu_variable_dt(
             chunks=(1, 2 * T, H, W),
             **hdf5plugin.Blosc(cname='lz4', clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE)
         )
+        
+        # Calcular los tiempos de inicio y fin de cada frame
+        frame_start_times = np.concatenate([[align_t_min], align_t_min + np.cumsum(frame_durations[:-1])])
+        frame_end_times = align_t_min + np.cumsum(frame_durations)
 
-        frame_start_times = np.concatenate([[t_min], t_min + np.cumsum(frame_durations[:-1])])
-        frame_end_times = t_min + np.cumsum(frame_durations)
-
-        for batch_start in range(0, num_frames, batch_size):
+        # Iterar por batches
+        for batch_start in tqdm(range(0, num_frames, batch_size), desc="Processing Event Batches"):
             batch_end = min(batch_start + batch_size, num_frames)
-            actual_batch_size = batch_end - batch_start
+            current_batch_size = batch_end - batch_start
 
-            batch_tensor = torch.zeros((actual_batch_size, 2 * T, H, W), dtype=torch.uint8, device=device)
+            # Determinar el rango de tiempo total para el batch actual
+            t_batch_start = frame_start_times[batch_start]
+            t_batch_end = frame_end_times[batch_end - 1] # Fin del último frame en el batch
 
-            for i in range(actual_batch_size):
-                frame_idx = batch_start + i
-                t_start = frame_start_times[frame_idx]
-                t_end = frame_end_times[frame_idx]
-                duration = frame_durations[frame_idx]
+            # Filtrar todos los eventos que caen dentro del rango de tiempo de todo el batch
+            mask_batch = (t >= t_batch_start) & (t < t_batch_end)
+            
+            # Si no hay eventos en este batch, llenar con ceros y continuar
+            if not np.any(mask_batch):
+                batch_tensor = torch.zeros((current_batch_size, 2 * T, H, W), dtype=torch.uint8, device=device)
+                dset[batch_start:batch_end] = batch_tensor.cpu().numpy()
+                if verbose:
+                    print(f"Frames {batch_start}–{batch_end - 1} written (no events)")
+                continue
 
-                mask = (t >= t_start) & (t < t_end)
-                if not np.any(mask):
-                    # Write a zero tensor to keep alignment
-                    tensor_frame = torch.zeros((2 * T, H, W), dtype=torch.uint8, device=device)
-                    batch_tensor[i] = tensor_frame
-                else:
+            # Eventos relevantes para el batch
+            x_batch = torch.from_numpy(x_all[mask_batch].astype(np.int32)).to(device)
+            y_batch = torch.from_numpy(y_all[mask_batch].astype(np.int32)).to(device)
+            t_batch = torch.from_numpy(t[mask_batch].astype(np.int64)).to(device)
+            p_batch = torch.from_numpy(p_all[mask_batch]).to(device)
 
-                    x_slice = torch.from_numpy(x[mask].astype(np.int32)).to(device)
-                    y_slice = torch.from_numpy(y[mask].astype(np.int32)).to(device)
-                    t_slice = torch.from_numpy(t[mask].astype(np.int64)).to(device)
-                    p_slice = torch.from_numpy(p[mask]).to(device)
+            # Encontrar a qué frame de salida pertenece cada evento
+            # Usar searchsorted para encontrar el índice del frame de inicio más cercano para cada evento
+            # Esto asigna cada evento a su frame correspondiente dentro del batch
+            # Los frame_start_times_batch son los inicios de los frames DENTRO del batch actual
+            frame_start_times_batch_torch = torch.from_numpy(frame_start_times[batch_start:batch_end]).to(device)
+            
+            # Buscar el índice del frame al que pertenece cada evento.
+            # `right` asegura que un evento en `t_start` se asigne al bin `t_start`.
+            # `torch.searchsorted` es clave aquí para vectorizar la asignación de frames.
+            # El resultado 'frame_idx_in_batch' será un índice relativo dentro del batch (0 a current_batch_size-1)
+            frame_idx_in_batch = torch.searchsorted(frame_start_times_batch_torch, t_batch, right=True) - 1
+            
+            # Filtrar eventos que caen fuera de los límites del batch o que no tienen un frame válido
+            # Asegurarse de que frame_idx_in_batch esté dentro de los límites válidos
+            valid_frame_idx_mask = (frame_idx_in_batch >= 0) & (frame_idx_in_batch < current_batch_size)
+            
+            x_batch_valid = x_batch[valid_frame_idx_mask]
+            y_batch_valid = y_batch[valid_frame_idx_mask]
+            t_batch_valid = t_batch[valid_frame_idx_mask]
+            p_batch_valid = p_batch[valid_frame_idx_mask]
+            frame_idx_in_batch_valid = frame_idx_in_batch[valid_frame_idx_mask]
 
-                    rel_t = t_slice - t_start
-                    bin_idx = ((rel_t * T) // duration).long()
-                    bin_idx = torch.clamp(bin_idx, 0, T - 1)
-                    ch_idx = p_slice * T + bin_idx
+            # Si después del filtrado no quedan eventos válidos para el batch, llenar con ceros
+            if x_batch_valid.numel() == 0:
+                batch_tensor = torch.zeros((current_batch_size, 2 * T, H, W), dtype=torch.uint8, device=device)
+                dset[batch_start:batch_end] = batch_tensor.cpu().numpy()
+                if verbose:
+                    print(f"Frames {batch_start}–{batch_end - 1} written (no valid events after filtering)")
+                continue
+            
+            # Obtener los tiempos de inicio para los frames a los que se asignaron los eventos
+            # Esto se hace vectorialmente usando gather
+            assigned_frame_start_times = frame_start_times_batch_torch[frame_idx_in_batch_valid]
+            
+            # Calcular el tiempo relativo dentro de su frame asignado
+            rel_t_batch = t_batch_valid - assigned_frame_start_times
+            
+            # Obtener las duraciones de los frames asignados
+            assigned_frame_durations = torch.from_numpy(frame_durations[batch_start:batch_end]).to(device)[frame_idx_in_batch_valid]
 
-                    valid = (x_slice >= 0) & (x_slice < W) & (y_slice >= 0) & (y_slice < H)
-                    x_valid = x_slice[valid]
-                    y_valid = y_slice[valid]
-                    ch_valid = ch_idx[valid]
+            # Calcular bin_idx (índice temporal dentro del frame)
+            # Evitar división por cero si alguna duración es 0, aunque debería ser positiva
+            bin_idx_batch = torch.div(rel_t_batch * T, assigned_frame_durations, rounding_mode='floor').long()
+            bin_idx_batch = torch.clamp(bin_idx_batch, 0, T - 1)
 
-                    flat_idx = (
-                        ch_valid * H * W +
-                        y_valid * W +
-                        x_valid
-                    ).long()
+            # Calcular ch_idx (canal de polaridad + bin temporal)
+            ch_idx_batch = p_batch_valid * T + bin_idx_batch
 
-                    tensor_flat = torch.zeros(2 * T * H * W, dtype=torch.int32, device=device)
-                    tensor_flat.scatter_add_(0, flat_idx, torch.ones_like(flat_idx, dtype=torch.int32))
+            # Validar coordenadas de eventos
+            valid_coords_mask = (x_batch_valid >= 0) & (x_batch_valid < W) & (y_batch_valid >= 0) & (y_batch_valid < H)
+            
+            x_final = x_batch_valid[valid_coords_mask]
+            y_final = y_batch_valid[valid_coords_mask]
+            ch_final = ch_idx_batch[valid_coords_mask]
+            frame_idx_final = frame_idx_in_batch_valid[valid_coords_mask]
 
-                    tensor_frame = tensor_flat.view(2 * T, H, W)
-                    batch_tensor[i] = torch.clamp(tensor_frame, max=255).to(torch.uint8)
+            # Crear el tensor 4D para el batch (batch_size, 2*T, H, W)
+            batch_tensor_flat_size = current_batch_size * 2 * T * H * W
+            batch_tensor_flat = torch.zeros(batch_tensor_flat_size, dtype=torch.int32, device=device)
 
+            # Calcular los índices planos para la operación scatter_add_
+            # flat_idx = frame_idx * (2*T*H*W) + ch_idx * (H*W) + y_coord * W + x_coord
+            flat_idx_batch = (
+                frame_idx_final * (2 * T * H * W) +
+                ch_final * (H * W) +
+                y_final * W +
+                x_final
+            ).long()
+
+            # Realizar la operación scatter_add_ una sola vez para todo el batch
+            batch_tensor_flat.scatter_add_(0, flat_idx_batch, torch.ones_like(flat_idx_batch, dtype=torch.int32))
+            
+            # Reshape y clamp a uint8
+            batch_tensor = batch_tensor_flat.view(current_batch_size, 2 * T, H, W)
+            batch_tensor = torch.clamp(batch_tensor, max=255).to(torch.uint8)
+            
+            # Guardar el batch completo en el dataset HDF5
             dset[batch_start:batch_end] = batch_tensor.cpu().numpy()
-
             if verbose:
                 print(f"Frames {batch_start}–{batch_end - 1} written")
-
+    
     print(f"\nSaved tensor sequence to: {h5_output_path}")
-    return num_frames, t_min
-
+    return num_frames, align_t_min
 
 # ----------------- PIPELINE -----------------------
 interval = 50000  # Intervalo de tiempo entre frames en microsegundos
 dt_in_ms = interval / 1000  # Convertir a milisegundos
 T = 10  # Número de bins para el histograma
-
-CHUNK_TARGET= interval
-MIN_CHUNK = 450 # Probably hast be 45000
-MAX_CHUNK = 55000
-
-
 # --- Configuración de rutas y parámetros
 dataset= 'dsec'
 split = 'test'
-
 input_path = 'data/' + dataset + '/' + split 
 dest_path = 'data/' + dataset + '_proc' + '/' + split
-
 sequences = [item for item in os.listdir(input_path) if os.path.isdir(os.path.join(input_path, item))]
-
-sequences = ["interlaken_00_d"]
+sequences = ["interlaken_00_b"] # Hardcoded for testing, remember to generalize or comment out for full run.
 
 for sequence in sequences:
     print(f"Processing sequence: {sequence}")
@@ -627,7 +432,6 @@ for sequence in sequences:
     h5_input_path = input_path + '/' + sequence + "/events/events.h5"
     npy_input_path = input_path + '_object_detections/' + sequence + "/object_detections/left/tracks.npy" 
     h5_output_path = ev_rep_save_path + 'event_representations_ds2_nearest.h5'
-
     # --- Ensure folders exist ---
     os.makedirs(ev_rep_save_path, exist_ok=True)
     os.makedirs(label_save_path, exist_ok=True)
@@ -638,82 +442,53 @@ for sequence in sequences:
     scaled_labels = scale_bounding_boxes(og_labels, scale_x=1.0, scale_y=360/480)
     updated_class_ids_labels = change_class_id(scaled_labels)
     non_zero_bbox_labels = filter_zero_size_bboxes(updated_class_ids_labels)
-    #filtered_labels = filter_confidence(non_zero_bbox_labels, threshold=0.01)
-
     real_frame_count = get_number_of_rgb_frames(sequence)
-
     unprocessed_labels = non_zero_bbox_labels.copy()
-    differences = np.diff(unprocessed_labels["t"])
-    print(len(differences))
-    timestamps_for_events = differences[differences != 0]
+    
 
-    new_timestamps = []
+    # ----------------- LOAD FIXED TIMESTAMPS FROM TXT ------------------------
+    timestamps_txt_path = input_path + '/' + sequence + "/timestamps.txt"
+    print(f"Loading frame timestamps from: {timestamps_txt_path}")
+    with open(timestamps_txt_path, 'r') as f:
+        timestamp_lines = f.readlines()
 
-    print(timestamps_for_events)
+    # --- START OF MODIFICATION TO USE RELATIVE TIMESTAMPS FOR FRAMES ---
+    original_absolute_timestamps_from_txt = np.array([int(line.strip()) for line in timestamp_lines], dtype=np.int64)
 
-    MAX_ITER = 100000  # safeguard to prevent true infinite loops
+    # Calculate frame durations based on the original timestamps
+    new_timestamps = np.diff(original_absolute_timestamps_from_txt) # This is the array of durations (e.g., [50017, 50006, ...])
 
-    for ts in timestamps_for_events:
-        ts = int(ts)  # Ensure it's a native Python int
-        #print(f"\nProcessing timestamp: {ts} µs")
+    # Create reconstructed_timestamps_np as accumulated differences starting from 0
+    # This means the first frame starts at 0, and subsequent frames end at accumulated durations.
+    reconstructed_timestamps_np = np.concatenate([[0], np.cumsum(new_timestamps)]) # <--- MODIFIED LINE
+    
+    # t_min_label will now be 0, satisfying the condition align_t_min <= t.max()
+    t_min_label = reconstructed_timestamps_np[0] # This will now be 0. <--- MODIFIED LINE
+    # --- END OF MODIFICATION ---
 
-        if ts <= 50500:
-            new_timestamps.append(ts)  # flat append ✅
-            #print(f"Flat append: {ts}")
-            continue
-
-        num_chunks = ts // CHUNK_TARGET
-        if num_chunks < 1:
-            num_chunks = 1
-
-        #print(f"Initial num_chunks: {num_chunks}")
-        
-        iter_count = 0  # safeguard counter
-        while True:
-            iter_count += 1
-            if iter_count > MAX_ITER:
-                #print("⚠️ Max iterations hit! Likely infinite loop.")
-                break
-
-            chunk_size = ts / num_chunks
-            #print(f"  Iter {iter_count}: chunk_size={chunk_size:.2f}, num_chunks={num_chunks}")
-
-            if MIN_CHUNK <= chunk_size <= MAX_CHUNK:
-                #print(f"✅ Valid chunk size in range. chunk_size={chunk_size:.2f}")
-                for i in range(num_chunks):
-                    this_chunk = int(round(chunk_size))
-                    if i == num_chunks - 1:
-                        this_chunk += ts - this_chunk * num_chunks
-                    new_timestamps.append(this_chunk)
-                break
-
-            num_chunks += 1  # increase until chunk_size is within the desired range
-
-    start_timestamp = unprocessed_labels["t"][0]
-    # Compute cumulative timestamps from differences
-    reconstructed_timestamps = [start_timestamp]
-    for delta in new_timestamps:
-        reconstructed_timestamps.append(reconstructed_timestamps[-1] + delta)
 
     # assign a detection to the nearest reconstructed_timestamp
+    # This part will now map labels to frame indices based on the new relative time scale.
     label_timestamps = unprocessed_labels["t"]
-    reconstructed_timestamps_np = np.array(reconstructed_timestamps)
+    reconstructed_timestamps_np_for_mapping = np.array(reconstructed_timestamps_np) # Use the new relative timestamps for mapping
     obj_idx_2_rep_idx = []
-
     for label_ts in label_timestamps:
-        # Find the index of the nearest timestamp in reconstructed_timestamps
-        # Using np.searchsorted to find the index where the detection_ts would be inserted
-        # and then checking the two closest timestamps (at the found index and index-1)
-        idx = np.searchsorted(reconstructed_timestamps_np, label_ts)
-
+        # Find the index of the nearest timestamp in reconstructed_timestamps_np_for_mapping
+        # You'll need to decide how to handle the original 'label_ts' (absolute)
+        # when matching against 'reconstructed_timestamps_np_for_mapping' (relative from 0).
+        # This part might need further adjustment if the original label_ts are absolute.
+        # For now, let's assume you want to map original label_ts to the *closest original absolute frame timestamp*.
+        # So, we revert to using original_absolute_timestamps_from_txt for mapping here:
+        idx = np.searchsorted(original_absolute_timestamps_from_txt, label_ts) # <--- MODIFIED LINE for correct mapping
+        
         if idx == 0:
             nearest_idx = 0
-        elif idx == len(reconstructed_timestamps_np):
-            nearest_idx = len(reconstructed_timestamps_np) - 1
+        elif idx == len(original_absolute_timestamps_from_txt): # <--- MODIFIED LINE
+            nearest_idx = len(original_absolute_timestamps_from_txt) - 1 # <--- MODIFIED LINE
         else:
-            # Check the two nearest timestamps
-            ts1 = reconstructed_timestamps_np[idx - 1]
-            ts2 = reconstructed_timestamps_np[idx]
+            # Check the two nearest timestamps from the original absolute list
+            ts1 = original_absolute_timestamps_from_txt[idx - 1] # <--- MODIFIED LINE
+            ts2 = original_absolute_timestamps_from_txt[idx] # <--- MODIFIED LINE
 
             if abs(label_ts - ts1) < abs(label_ts - ts2):
                 nearest_idx = idx - 1
@@ -721,44 +496,37 @@ for sequence in sequences:
                 nearest_idx = idx
 
         obj_idx_2_rep_idx.append(nearest_idx)
-
     # Convert the list to a numpy array
     obj_idx_2_rep_idx = np.array(obj_idx_2_rep_idx)
 
     last_labels = non_zero_bbox_labels
     last_labels = last_labels.copy()
-    last_labels['t'] = (last_labels['t'] // 1000000).astype(np.int64)
-    t_min_label = last_labels['t'].min()
-    print(f"t_min_label: {t_min_label} µs")
-    print(f"Total labels: {len(last_labels)}")
-
+    last_labels['t'] = (last_labels['t']).astype(np.int64)
+    
     # ----------------- EVENTOS ------------------------
     # Convertir archivo a nueva resolución en memoria
     event_data = convert_h5_resolution_in_memory(h5_input_path)
-
     # Escribir archivo .h5 en RAM (BytesIO)
     h5_buffer = write_event_data_to_memory_h5(event_data)
-
     # Procesar directamente desde el archivo en RAM
     with h5py.File(h5_buffer, 'r') as h5_file:
-        num_frames, t_min = process_and_save_event_tensor_sequence_gpu_variable_dt(
+        num_frames, t_min_processed = process_and_save_event_tensor_sequence(
             h5_file=h5_file,
             h5_output_path=h5_output_path,
             T=T,
-            H=384,
+            H=360, # <--- MODIFIED: Changed from 384 to 360 for consistency with event/label scaling
             W=640,
-            frame_durations=new_timestamps,
-            batch_size=150,
+            frame_durations=new_timestamps, # These are still the durations
+            batch_size=20,
             verbose=True,
-            align_t_min=t_min_label
+            align_t_min=t_min_label # This is now 0
         )
 
     # ----------------- TIMESTAMPS Y LABELS ------------------------
-    # Guardar timestamps generados por las representaciones
-
+    # Guardar timestamps generados by the representations (now relative from 0)
     timestamps_output_path = ev_rep_save_path + 'timestamps_us.npy'
     print(f"Saving timestamps to: {timestamps_output_path}")
-    np.save(timestamps_output_path, np.array(reconstructed_timestamps_np, dtype=np.int64))
+    np.save(timestamps_output_path, reconstructed_timestamps_np) # Saves the new relative timestamps <--- MODIFIED
 
     # save object index to representation index mapping
     obj_idx_2_rep_idx_output_path = ev_rep_save_path + 'objframe_idx_2_repr_idx.npy'
@@ -772,18 +540,14 @@ for sequence in sequences:
     np.savez(os.path.join(label_save_path, 'labels.npz'),
              labels=last_labels,
              objframe_idx_2_label_idx=obj_idx_2_rep_idx)
-
-    # save the timestamps belonging to the labels
+    
+    # save the timestamps belonging to the labels (these are still the original absolute ones)
     label_timestamps_output_path = label_save_path + 'timestamps_us.npy'
     print(f"Saving label timestamps to: {label_timestamps_output_path}")
     np.save(label_timestamps_output_path, non_zero_bbox_labels['t'])
 
     # check the number of frames in the h5 file
-    with h5py.File(h5_output_path, 'r') as f_out:
-        num_frames_in_h5 = f_out['/data'].shape[0]
-        print(f"Number of frames in the output h5 file: {num_frames_in_h5}")
-
-
+    print(f"Number of frames processed and saved: {num_frames}")
 
 
 

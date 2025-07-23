@@ -2,7 +2,12 @@ import os
 import numpy as np
 from tqdm import tqdm
 import os
-from scripts.my_toolbox import *
+from utils.helpers import get_number_of_rgb_frames, filter_pred_by_confidence
+from utils.conversion import get_rgb_by_frame, convert_predictions, convert_gt
+from utils.fusion import apply_nms_to_frame, weighted_fusion
+from utils.visualization import process_drawn_images_v2
+from tracking.byte_tracker import tracking_bytetrack
+from utils.io_utils import create_collage_video_v2
 
 
 SCALE_Y = 360 / 480  # = 0.75
@@ -14,17 +19,12 @@ all_sequences = [item for item in os.listdir(root_dir) if os.path.isdir(os.path.
 get_tracking_metrics = False
 
 # FOR TESTING PURPOSES ONLY
-all_sequences = ["zurich_city_14_c"] # DELETE BEFORE DOING AUTOMATIZATION
+all_sequences = ["interlaken_00_b"] # DELETE BEFORE DOING AUTOMATIZATION
 
 sequences_to_remove = ["interlaken_01_a","zurich_city_00_b"]
 
 all_sequences = [item for item in all_sequences if item not in sequences_to_remove]
 
-""" all_sequences = ["interlaken_00_b",
-                 "zurich_city_12_a",
-                 "zurich_city_13_a",
-                 "zurich_city_14_a",
-                 "zurich_city_15_a"] """
 
 video_resolution = (640*2, 480*2) # You can change this
 video_fps = 20 # Frames per second
