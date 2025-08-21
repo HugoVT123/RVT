@@ -18,6 +18,100 @@ dtype = np.dtype([
     ('confidence', np.float32)
 ])
 
+def sum_and_normalize_channels_to_opencv(tensor_image, output_type='float32'):
+    """
+    Sums values across the channel dimension (C), normalizes the result,
+    and converts it into an OpenCV-compatible NumPy array.
+
+    Args:
+        tensor_image (torch.Tensor): A tensor of shape (1, C, H, W).
+        output_type (str): Desired output data type. Can be 'float32' (0-1 range)
+                           or 'uint8' (0-255 range). Defaults to 'float32'.
+
+    Returns:
+        numpy.ndarray: An OpenCV-compatible NumPy array of shape (H, W)
+                       with values normalized to the range [0, 1] (float32)
+                       or [0, 255] (uint8).
+                       Returns None if the input tensor has an invalid shape.
+    """
+    if tensor_image.dim() != 4 or tensor_image.shape[0] != 1:
+        print("Error: Input tensor must be of shape (1, C, H, W).")
+        return None
+
+    # Sum across the channel dimension (dim=1)
+    # The result will have shape (1, 1, H, W)
+    summed_image = torch.sum(tensor_image, dim=1, keepdim=True)
+
+    # Normalize the summed image to the range [0, 1]
+    min_val = summed_image.min()
+    max_val = summed_image.max()
+
+    if max_val == min_val:
+        normalized_image = torch.zeros_like(summed_image)
+    else:
+        normalized_image = (summed_image - min_val) / (max_val - min_val)
+
+    # Convert to NumPy array
+    # .squeeze() removes dimensions of size 1 (batch and channel in this case)
+    numpy_image = normalized_image.squeeze().cpu().numpy() # .cpu() ensures it's on CPU before .numpy()
+
+    # Convert to desired output type
+    if output_type == 'uint8':
+        # Scale to 0-255 and convert to uint8
+        numpy_image = (numpy_image * 255).astype(np.uint8)
+    elif output_type == 'float32':
+        # Ensure it's float32 (already 0-1 from normalization)
+        numpy_image = numpy_image.astype(np.float32)
+    else:
+        print(f"Warning: Unsupported output_type '{output_type}'. Returning float32.")
+        numpy_image = numpy_image.astype(np.float32)
+
+    return numpy_image
+
+def sum_and_create_heatmap(tensor_image, colormap=cv2.COLORMAP_JET):
+    """
+    Sums values across the channel dimension (C), normalizes the result,
+    and converts it into an OpenCV heatmap image using a specified colormap.
+
+    Args:
+        tensor_image (torch.Tensor): A tensor of shape (1, C, H, W).
+        colormap (int): The OpenCV colormap constant to use (e.g., cv2.COLORMAP_JET,
+                        cv2.COLORMAP_VIRIDIS, cv2.COLORMAP_PLASMA, etc.).
+                        Defaults to cv2.COLORMAP_JET.
+
+    Returns:
+        numpy.ndarray: An OpenCV-compatible BGR image (3 channels) of shape (H, W, 3)
+                       representing the heatmap. Values will be in [0, 255] and uint8.
+                       Returns None if the input tensor has an invalid shape.
+    """
+    if tensor_image.dim() != 4 or tensor_image.shape[0] != 1:
+        print("Error: Input tensor must be of shape (1, C, H, W).")
+        return None
+
+    # Sum across the channel dimension (dim=1)
+    # The result will have shape (1, 1, H, W)
+    summed_image = torch.sum(tensor_image, dim=1, keepdim=True)
+
+    # Normalize the summed image to the range [0, 1]
+    min_val = summed_image.min()
+    max_val = summed_image.max()
+
+    if max_val == min_val:
+        normalized_image = torch.zeros_like(summed_image)
+    else:
+        normalized_image = (summed_image - min_val) / (max_val - min_val)
+
+    # Convert to NumPy array and squeeze dimensions (H, W)
+    # .cpu() ensures it's on CPU before .numpy()
+    numpy_image_float = normalized_image.squeeze().cpu().numpy()
+
+    # Scale to 0-255 and convert to uint8, as colormaps typically expect this.
+    numpy_image_uint8 = (numpy_image_float * 255).astype(np.uint8)
+
+    # Apply the colormap
+    heatmap_image = cv2.applyColorMap(numpy_image_uint8, colormap)
+
+    return heatmap_image
 
 with initialize(config_path="config"):
     config = compose(config_name="val", overrides=[
@@ -27,7 +121,7 @@ with initialize(config_path="config"):
         "dataset.path=data/dsec_proc",
         "use_test_set=0",
         "hardware.gpus=0",
-        "batch_size=1", # Note: This batch_size in config might be for validation/test loading,
+        "batch_size=4", # Note: This batch_size in config might be for validation/test loading,
                         # not necessarily the BATCH_SIZE you define below.
         "hardware.num_workers=0",
         "model.postprocess.confidence_threshold=0.001"
@@ -47,8 +141,6 @@ model.to(device)
 # -------------------------------
 root_dir = "data/dsec_proc/test"
 all_sequences = [item for item in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, item))]
-
-all_sequences = ["interlaken_00_b"] # DELETE BEFORE DOING AUTOMATIZATION
 
 
 for sequence in all_sequences:
@@ -103,10 +195,18 @@ for sequence in all_sequences:
                 if new_rnn_states != None:
                     current_rnn_states = new_rnn_states
 
+                img = sum_and_normalize_channels_to_opencv(new_rnn_states[3][1])
+
+                # save img 
+                if img is not None:
+                    img_path = os.path.join("visuals", sequence,"rnn", f"{start_idx:04d}.png")
+                    os.makedirs(os.path.dirname(img_path), exist_ok=True)
+                    cv2.imwrite(img_path, img * 255)
+
             preds_post = postprocess(
                 prediction=preds,
                 num_classes=3,
-                conf_thre=0.1,
+                conf_thre=0.001,
                 nms_thre=0.01
             )
 

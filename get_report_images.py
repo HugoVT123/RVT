@@ -19,7 +19,7 @@ all_sequences = [item for item in os.listdir(root_dir) if os.path.isdir(os.path.
 get_tracking_metrics = False
 
 # FOR TESTING PURPOSES ONLY
-all_sequences = ["interlaken_00_b"] # DELETE BEFORE DOING AUTOMATIZATION
+all_sequences = ["zurich_city_12_a"] # DELETE BEFORE DOING AUTOMATIZATION
 
 sequences_to_remove = ["interlaken_01_a","zurich_city_00_b"]
 

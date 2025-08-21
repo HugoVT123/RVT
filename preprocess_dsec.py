@@ -412,157 +412,94 @@ def process_and_save_event_tensor_sequence(
 
 # ----------------- PIPELINE -----------------------
 interval = 50000  # Intervalo de tiempo entre frames en microsegundos
-dt_in_ms = interval / 1000  # Convertir a milisegundos
-T = 10  # Número de bins para el histograma
-# --- Configuración de rutas y parámetros
-dataset= 'dsec'
+dt_in_ms = interval / 1000
+T = 10
+dataset = 'dsec'
 split = 'test'
-input_path = 'data/' + dataset + '/' + split 
+input_path = 'data/' + dataset + '/' + split
 dest_path = 'data/' + dataset + '_proc' + '/' + split
 sequences = [item for item in os.listdir(input_path) if os.path.isdir(os.path.join(input_path, item))]
-sequences = ["interlaken_00_b"] # Hardcoded for testing, remember to generalize or comment out for full run.
+
 
 for sequence in sequences:
     print(f"Processing sequence: {sequence}")
     
-    ev_rep_save_path = dest_path  + '/'  + sequence + '/' + 'event_representations_v2/' + 'stacked_histogram_dt='+ str(int(dt_in_ms)) + '_nbins=' + str(T) +'/'
-    label_save_path = dest_path  + '/'  + sequence + '/' + 'labels_v2/'
+    ev_rep_save_path = dest_path + '/' + sequence + '/' + 'event_representations_v2/' + \
+                       f'stacked_histogram_dt={int(dt_in_ms)}_nbins={T}/'
+    label_save_path = dest_path + '/' + sequence + '/' + 'labels_v2/'
     
-    # Inputs paths
     h5_input_path = input_path + '/' + sequence + "/events/events.h5"
-    npy_input_path = input_path + '_object_detections/' + sequence + "/object_detections/left/tracks.npy" 
+    npy_input_path = input_path + '_object_detections/' + sequence + "/object_detections/left/tracks.npy"
     h5_output_path = ev_rep_save_path + 'event_representations_ds2_nearest.h5'
-    # --- Ensure folders exist ---
+
     os.makedirs(ev_rep_save_path, exist_ok=True)
     os.makedirs(label_save_path, exist_ok=True)
 
     # ----------------- LABELS ------------------------
-    # Cargar y procesar etiquetas antes del procesamiento de eventos
     og_labels = load_labels(npy_input_path)
     scaled_labels = scale_bounding_boxes(og_labels, scale_x=1.0, scale_y=360/480)
     updated_class_ids_labels = change_class_id(scaled_labels)
     non_zero_bbox_labels = filter_zero_size_bboxes(updated_class_ids_labels)
-    real_frame_count = get_number_of_rgb_frames(sequence)
-    unprocessed_labels = non_zero_bbox_labels.copy()
-    
+    last_labels = non_zero_bbox_labels.copy()
+    last_labels['t'] = last_labels['t'].astype(np.int64)
 
-    # ----------------- LOAD FIXED TIMESTAMPS FROM TXT ------------------------
+    # ----------------- LOAD TIMESTAMPS ------------------------
     timestamps_txt_path = input_path + '/' + sequence + "/timestamps.txt"
     print(f"Loading frame timestamps from: {timestamps_txt_path}")
     with open(timestamps_txt_path, 'r') as f:
         timestamp_lines = f.readlines()
-
-    # --- START OF MODIFICATION TO USE RELATIVE TIMESTAMPS FOR FRAMES ---
     original_absolute_timestamps_from_txt = np.array([int(line.strip()) for line in timestamp_lines], dtype=np.int64)
 
-    # Calculate frame durations based on the original timestamps
-    new_timestamps = np.diff(original_absolute_timestamps_from_txt) # This is the array of durations (e.g., [50017, 50006, ...])
+    # Frame durations
+    new_timestamps = np.diff(original_absolute_timestamps_from_txt)
+    reconstructed_timestamps_np = np.concatenate([[0], np.cumsum(new_timestamps)])
+    t_min_label = reconstructed_timestamps_np[0]  # now 0
 
-    # Create reconstructed_timestamps_np as accumulated differences starting from 0
-    # This means the first frame starts at 0, and subsequent frames end at accumulated durations.
-    reconstructed_timestamps_np = np.concatenate([[0], np.cumsum(new_timestamps)]) # <--- MODIFIED LINE
-    
-    # t_min_label will now be 0, satisfying the condition align_t_min <= t.max()
-    t_min_label = reconstructed_timestamps_np[0] # This will now be 0. <--- MODIFIED LINE
-    # --- END OF MODIFICATION ---
+    # ----------------- CREATE UNIQUE FRAME MAPPING ------------------------
+    unique_label_times, inverse_indices = np.unique(last_labels['t'], return_inverse=True)
 
-
-    # assign a detection to the nearest reconstructed_timestamp
-    # This part will now map labels to frame indices based on the new relative time scale.
-    label_timestamps = unprocessed_labels["t"]
-    reconstructed_timestamps_np_for_mapping = np.array(reconstructed_timestamps_np) # Use the new relative timestamps for mapping
-    obj_idx_2_rep_idx = []
-    for label_ts in label_timestamps:
-        # Find the index of the nearest timestamp in reconstructed_timestamps_np_for_mapping
-        # You'll need to decide how to handle the original 'label_ts' (absolute)
-        # when matching against 'reconstructed_timestamps_np_for_mapping' (relative from 0).
-        # This part might need further adjustment if the original label_ts are absolute.
-        # For now, let's assume you want to map original label_ts to the *closest original absolute frame timestamp*.
-        # So, we revert to using original_absolute_timestamps_from_txt for mapping here:
-        idx = np.searchsorted(original_absolute_timestamps_from_txt, label_ts) # <--- MODIFIED LINE for correct mapping
-        
+    objframe_idx_2_label_idx = []
+    for ts in unique_label_times:
+        idx = np.searchsorted(original_absolute_timestamps_from_txt, ts)
         if idx == 0:
             nearest_idx = 0
-        elif idx == len(original_absolute_timestamps_from_txt): # <--- MODIFIED LINE
-            nearest_idx = len(original_absolute_timestamps_from_txt) - 1 # <--- MODIFIED LINE
+        elif idx == len(original_absolute_timestamps_from_txt):
+            nearest_idx = len(original_absolute_timestamps_from_txt) - 1
         else:
-            # Check the two nearest timestamps from the original absolute list
-            ts1 = original_absolute_timestamps_from_txt[idx - 1] # <--- MODIFIED LINE
-            ts2 = original_absolute_timestamps_from_txt[idx] # <--- MODIFIED LINE
+            ts1 = original_absolute_timestamps_from_txt[idx - 1]
+            ts2 = original_absolute_timestamps_from_txt[idx]
+            nearest_idx = idx - 1 if abs(ts - ts1) < abs(ts - ts2) else idx
+        objframe_idx_2_label_idx.append(nearest_idx)
 
-            if abs(label_ts - ts1) < abs(label_ts - ts2):
-                nearest_idx = idx - 1
-            else:
-                nearest_idx = idx
+    objframe_idx_2_label_idx = np.array(objframe_idx_2_label_idx, dtype=np.int64)
 
-        obj_idx_2_rep_idx.append(nearest_idx)
-    # Convert the list to a numpy array
-    obj_idx_2_rep_idx = np.array(obj_idx_2_rep_idx)
-
-    last_labels = non_zero_bbox_labels
-    last_labels = last_labels.copy()
-    last_labels['t'] = (last_labels['t']).astype(np.int64)
-    
     # ----------------- EVENTOS ------------------------
-    # Convertir archivo a nueva resolución en memoria
     event_data = convert_h5_resolution_in_memory(h5_input_path)
-    # Escribir archivo .h5 en RAM (BytesIO)
     h5_buffer = write_event_data_to_memory_h5(event_data)
-    # Procesar directamente desde el archivo en RAM
     with h5py.File(h5_buffer, 'r') as h5_file:
         num_frames, t_min_processed = process_and_save_event_tensor_sequence(
             h5_file=h5_file,
             h5_output_path=h5_output_path,
             T=T,
-            H=360, # <--- MODIFIED: Changed from 384 to 360 for consistency with event/label scaling
+            H=360,
             W=640,
-            frame_durations=new_timestamps, # These are still the durations
+            frame_durations=new_timestamps,
             batch_size=20,
             verbose=True,
-            align_t_min=t_min_label # This is now 0
+            align_t_min=t_min_label
         )
 
-    # ----------------- TIMESTAMPS Y LABELS ------------------------
-    # Guardar timestamps generados by the representations (now relative from 0)
-    timestamps_output_path = ev_rep_save_path + 'timestamps_us.npy'
-    print(f"Saving timestamps to: {timestamps_output_path}")
-    np.save(timestamps_output_path, reconstructed_timestamps_np) # Saves the new relative timestamps <--- MODIFIED
+    # Clip mapping to valid range
+    objframe_idx_2_label_idx = np.clip(objframe_idx_2_label_idx, 0, num_frames - 1)
 
-    # save object index to representation index mapping
-    obj_idx_2_rep_idx_output_path = ev_rep_save_path + 'objframe_idx_2_repr_idx.npy'
-    print(f"Saving object index to representation index mapping to: {obj_idx_2_rep_idx_output_path}")
-    np.save(obj_idx_2_rep_idx_output_path, obj_idx_2_rep_idx)
-
-    # labels_v2
-    labels_output_path = label_save_path + 'labels.npz'
-    print(f"Saving labels to: {labels_output_path}")
-        # Guardar estructura compatible con RVT
+    # ----------------- SAVE ------------------------
+    np.save(ev_rep_save_path + 'timestamps_us.npy', reconstructed_timestamps_np)
+    np.save(ev_rep_save_path + 'objframe_idx_2_repr_idx.npy', objframe_idx_2_label_idx)
     np.savez(os.path.join(label_save_path, 'labels.npz'),
-             labels=last_labels,
-             objframe_idx_2_label_idx=obj_idx_2_rep_idx)
-    
-    # save the timestamps belonging to the labels (these are still the original absolute ones)
-    label_timestamps_output_path = label_save_path + 'timestamps_us.npy'
-    print(f"Saving label timestamps to: {label_timestamps_output_path}")
-    np.save(label_timestamps_output_path, non_zero_bbox_labels['t'])
+            labels=last_labels,
+            objframe_idx_2_label_idx=objframe_idx_2_label_idx)
+    np.save(label_save_path + 'timestamps_us.npy', unique_label_times)
 
-    # check the number of frames in the h5 file
     print(f"Number of frames processed and saved: {num_frames}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    print(f"Unique label frames: {len(unique_label_times)}, Mapping length: {len(objframe_idx_2_label_idx)}")
 

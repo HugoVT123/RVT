@@ -135,6 +135,7 @@ def main(config: DictConfig):
         benchmark=config.reproduce.benchmark,
         deterministic=config.reproduce.deterministic_flag,
     )
+    
     trainer.fit(model=module, ckpt_path=ckpt_path, datamodule=data_module)
 
 

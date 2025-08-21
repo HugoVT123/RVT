@@ -21,4 +21,4 @@ module load cuDNN/9.1.1.17-CUDA-12.4.0
 
 source activate rvt
 
-python predictionsv2.py
+python predictions.py

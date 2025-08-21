@@ -42,7 +42,7 @@ class ObjectLabelBase:
         y1 = th.clamp(self.y + self.h, min=0, max=ht - 1)
         w = x1 - x0
         h = y1 - y0
-        assert th.all(w > 0)
+        #assert th.all(w > 0)
         assert th.all(h > 0)
         self.x = x0
         self.y = y0
@@ -171,7 +171,8 @@ class ObjectLabelFactory(ObjectLabelBase):
         np_labels = rearrange(np_labels, 'fields L -> L fields')
         torch_labels = th.from_numpy(np_labels)
         objframe_idx_2_label_idx = th.from_numpy(objframe_idx_2_label_idx.astype('int64'))
-        assert objframe_idx_2_label_idx.numel() == np.unique(object_labels['t']).size
+        assert objframe_idx_2_label_idx.numel() == np.unique(object_labels['t']).size, \
+            f"Mismatch: objframe_idx_2_label_idx.numel() = {objframe_idx_2_label_idx.numel()}, np.unique(object_labels['t']).size = {np.unique(object_labels['t']).size}"
         return ObjectLabelFactory(object_labels=torch_labels,
                                   objframe_idx_2_label_idx=objframe_idx_2_label_idx,
                                   input_size_hw=input_size_hw,

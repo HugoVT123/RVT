@@ -30,6 +30,8 @@ sequences_to_remove = ["interlaken_01_a","zurich_city_00_b"]
 
 all_sequences = [item for item in all_sequences if item not in sequences_to_remove]
 
+all_sequences = ["zurich_city_12_a"] # DELETE BEFORE DOING AUTOMATIZATION
+
 """ all_sequences = ["interlaken_00_b",
                  "zurich_city_12_a",
                  "zurich_city_13_a",

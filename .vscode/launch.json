@@ -143,9 +143,27 @@
           "cwd": "/home/hsosapavon/repos/RVT"
         },
 
-        
-
-
+        {
+          "name": "DSEC: Debug train.py",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "/home/hsosapavon/repos/RVT/train.py",
+          "args": [
+            "model=rnndet",
+            "dataset=gen4",
+            "dataset.path=data/dsec_proc",
+            "wandb.project_name=RVT",
+            "wandb.group_name=1mpx",
+            "+experiment/gen4=base.yaml",
+            "hardware.gpus=0",
+            "batch_size.train=2",
+            "batch_size.eval=2",
+            "hardware.num_workers.train=2",
+            "hardware.num_workers.eval=2"
+          ],
+          "console": "integratedTerminal",
+          "cwd": "/home/hsosapavon/repos/RVT"
+        }
           
     ]
 }

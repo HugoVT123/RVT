@@ -68,7 +68,7 @@ class SequenceBase(MapDataPipe):
         assert self.ev_repr_file.exists(), f'{str(self.ev_repr_file)=}'
 
         with Timer(timer_name='prepare labels'):
-            label_data = np.load(str(labels_dir / 'labels.npz'))
+            label_data = np.load(str(labels_dir / 'labels.npz'),allow_pickle=True)
             objframe_idx_2_label_idx = label_data['objframe_idx_2_label_idx']
             labels = label_data['labels']
             label_factory = ObjectLabelFactory.from_structured_array(
