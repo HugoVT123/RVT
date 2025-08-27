@@ -8,6 +8,7 @@ import os
 import io
 from utils.helpers import get_number_of_rgb_frames
 from tqdm import tqdm
+import argparse
 
 def adaptive_process_and_save_event_tensor_sequence(
     h5_file, h5_output_path, t_min, new_timestamps, T=10, H=360, W=640, verbose=False):
@@ -411,95 +412,106 @@ def process_and_save_event_tensor_sequence(
     return num_frames, align_t_min
 
 # ----------------- PIPELINE -----------------------
-interval = 50000  # Intervalo de tiempo entre frames en microsegundos
-dt_in_ms = interval / 1000
-T = 10
-dataset = 'dsec'
-split = 'test'
-input_path = 'data/' + dataset + '/' + split
-dest_path = 'data/' + dataset + '_proc' + '/' + split
-sequences = [item for item in os.listdir(input_path) if os.path.isdir(os.path.join(input_path, item))]
+def main():
+    parser = argparse.ArgumentParser(description="Process event-based dataset for object detection.")
+    parser.add_argument('--interval', type=int, default=50000, help='Time interval between frames in microseconds.')
+    parser.add_argument('--T', type=int, default=10, help='Number of time bins (T).')
+    parser.add_argument('--split', type=str, default='test', help='Dataset split (e.g., test, train).')
+    parser.add_argument('--input_path', type=str, default='data/', help='Base input data directory.')
+    parser.add_argument('--dest_path', type=str, default='data/', help='Base destination directory.')
 
+    args = parser.parse_args()
 
-for sequence in sequences:
-    print(f"Processing sequence: {sequence}")
+    dataset = 'dsec'
+
+    dt_in_ms = args.interval / 1000
     
-    ev_rep_save_path = dest_path + '/' + sequence + '/' + 'event_representations_v2/' + \
-                       f'stacked_histogram_dt={int(dt_in_ms)}_nbins={T}/'
-    label_save_path = dest_path + '/' + sequence + '/' + 'labels_v2/'
+    full_input_path = os.path.join(args.input_path, dataset, args.split)
+    full_dest_path = os.path.join(args.dest_path, dataset + '_proc', args.split)
+
+    sequences = [item for item in os.listdir(full_input_path) if os.path.isdir(os.path.join(full_input_path, item))]
     
-    h5_input_path = input_path + '/' + sequence + "/events/events.h5"
-    npy_input_path = input_path + '_object_detections/' + sequence + "/object_detections/left/tracks.npy"
-    h5_output_path = ev_rep_save_path + 'event_representations_ds2_nearest.h5'
+    for sequence in sequences:
+        print(f"Processing sequence: {sequence}")
+        
+        ev_rep_save_path = os.path.join(full_dest_path, sequence, 'event_representations_v2', 
+                                         f'stacked_histogram_dt={int(dt_in_ms)}_nbins={args.T}')
+        label_save_path = os.path.join(full_dest_path, sequence, 'labels_v2')
+        
+        h5_input_path = os.path.join(full_input_path, sequence, "events/events.h5")
+        npy_input_path = os.path.join(args.input_path + '_object_detections', sequence, "object_detections/left/tracks.npy")
+        h5_output_path = os.path.join(ev_rep_save_path, 'event_representations_ds2_nearest.h5')
 
-    os.makedirs(ev_rep_save_path, exist_ok=True)
-    os.makedirs(label_save_path, exist_ok=True)
+        os.makedirs(ev_rep_save_path, exist_ok=True)
+        os.makedirs(label_save_path, exist_ok=True)
 
-    # ----------------- LABELS ------------------------
-    og_labels = load_labels(npy_input_path)
-    scaled_labels = scale_bounding_boxes(og_labels, scale_x=1.0, scale_y=360/480)
-    updated_class_ids_labels = change_class_id(scaled_labels)
-    non_zero_bbox_labels = filter_zero_size_bboxes(updated_class_ids_labels)
-    last_labels = non_zero_bbox_labels.copy()
-    last_labels['t'] = last_labels['t'].astype(np.int64)
+        # ----------------- LABELS ------------------------
+        og_labels = load_labels(npy_input_path)
+        scaled_labels = scale_bounding_boxes(og_labels, scale_x=1.0, scale_y=360/480)
+        updated_class_ids_labels = change_class_id(scaled_labels)
+        non_zero_bbox_labels = filter_zero_size_bboxes(updated_class_ids_labels)
+        last_labels = non_zero_bbox_labels.copy()
+        last_labels['t'] = last_labels['t'].astype(np.int64)
 
-    # ----------------- LOAD TIMESTAMPS ------------------------
-    timestamps_txt_path = input_path + '/' + sequence + "/timestamps.txt"
-    print(f"Loading frame timestamps from: {timestamps_txt_path}")
-    with open(timestamps_txt_path, 'r') as f:
-        timestamp_lines = f.readlines()
-    original_absolute_timestamps_from_txt = np.array([int(line.strip()) for line in timestamp_lines], dtype=np.int64)
+        # ----------------- LOAD TIMESTAMPS ------------------------
+        timestamps_txt_path = os.path.join(full_input_path, sequence, "timestamps.txt")
+        print(f"Loading frame timestamps from: {timestamps_txt_path}")
+        with open(timestamps_txt_path, 'r') as f:
+            timestamp_lines = f.readlines()
+        original_absolute_timestamps_from_txt = np.array([int(line.strip()) for line in timestamp_lines], dtype=np.int64)
 
-    # Frame durations
-    new_timestamps = np.diff(original_absolute_timestamps_from_txt)
-    reconstructed_timestamps_np = np.concatenate([[0], np.cumsum(new_timestamps)])
-    t_min_label = reconstructed_timestamps_np[0]  # now 0
+        # Frame durations
+        new_timestamps = np.diff(original_absolute_timestamps_from_txt)
+        reconstructed_timestamps_np = np.concatenate([[0], np.cumsum(new_timestamps)])
+        t_min_label = reconstructed_timestamps_np[0]
 
-    # ----------------- CREATE UNIQUE FRAME MAPPING ------------------------
-    unique_label_times, inverse_indices = np.unique(last_labels['t'], return_inverse=True)
+        # ----------------- CREATE UNIQUE FRAME MAPPING ------------------------
+        unique_label_times, inverse_indices = np.unique(last_labels['t'], return_inverse=True)
 
-    objframe_idx_2_label_idx = []
-    for ts in unique_label_times:
-        idx = np.searchsorted(original_absolute_timestamps_from_txt, ts)
-        if idx == 0:
-            nearest_idx = 0
-        elif idx == len(original_absolute_timestamps_from_txt):
-            nearest_idx = len(original_absolute_timestamps_from_txt) - 1
-        else:
-            ts1 = original_absolute_timestamps_from_txt[idx - 1]
-            ts2 = original_absolute_timestamps_from_txt[idx]
-            nearest_idx = idx - 1 if abs(ts - ts1) < abs(ts - ts2) else idx
-        objframe_idx_2_label_idx.append(nearest_idx)
+        objframe_idx_2_label_idx = []
+        for ts in unique_label_times:
+            idx = np.searchsorted(original_absolute_timestamps_from_txt, ts)
+            if idx == 0:
+                nearest_idx = 0
+            elif idx == len(original_absolute_timestamps_from_txt):
+                nearest_idx = len(original_absolute_timestamps_from_txt) - 1
+            else:
+                ts1 = original_absolute_timestamps_from_txt[idx - 1]
+                ts2 = original_absolute_timestamps_from_txt[idx]
+                nearest_idx = idx - 1 if abs(ts - ts1) < abs(ts - ts2) else idx
+            objframe_idx_2_label_idx.append(nearest_idx)
 
-    objframe_idx_2_label_idx = np.array(objframe_idx_2_label_idx, dtype=np.int64)
+        objframe_idx_2_label_idx = np.array(objframe_idx_2_label_idx, dtype=np.int64)
 
-    # ----------------- EVENTOS ------------------------
-    event_data = convert_h5_resolution_in_memory(h5_input_path)
-    h5_buffer = write_event_data_to_memory_h5(event_data)
-    with h5py.File(h5_buffer, 'r') as h5_file:
-        num_frames, t_min_processed = process_and_save_event_tensor_sequence(
-            h5_file=h5_file,
-            h5_output_path=h5_output_path,
-            T=T,
-            H=360,
-            W=640,
-            frame_durations=new_timestamps,
-            batch_size=20,
-            verbose=True,
-            align_t_min=t_min_label
-        )
+        # ----------------- EVENTOS ------------------------
+        event_data = convert_h5_resolution_in_memory(h5_input_path)
+        h5_buffer = write_event_data_to_memory_h5(event_data)
+        with h5py.File(h5_buffer, 'r') as h5_file:
+            num_frames, t_min_processed = process_and_save_event_tensor_sequence(
+                h5_file=h5_file,
+                h5_output_path=h5_output_path,
+                T=args.T,
+                H=360,
+                W=640,
+                frame_durations=new_timestamps,
+                batch_size=20,
+                verbose=True,
+                align_t_min=t_min_label
+            )
 
-    # Clip mapping to valid range
-    objframe_idx_2_label_idx = np.clip(objframe_idx_2_label_idx, 0, num_frames - 1)
+        # Clip mapping to valid range
+        objframe_idx_2_label_idx = np.clip(objframe_idx_2_label_idx, 0, num_frames - 1)
 
-    # ----------------- SAVE ------------------------
-    np.save(ev_rep_save_path + 'timestamps_us.npy', reconstructed_timestamps_np)
-    np.save(ev_rep_save_path + 'objframe_idx_2_repr_idx.npy', objframe_idx_2_label_idx)
-    np.savez(os.path.join(label_save_path, 'labels.npz'),
-            labels=last_labels,
-            objframe_idx_2_label_idx=objframe_idx_2_label_idx)
-    np.save(label_save_path + 'timestamps_us.npy', unique_label_times)
+        # ----------------- SAVE ------------------------
+        np.save(os.path.join(ev_rep_save_path, 'timestamps_us.npy'), reconstructed_timestamps_np)
+        np.save(os.path.join(ev_rep_save_path, 'objframe_idx_2_repr_idx.npy'), objframe_idx_2_label_idx)
+        np.savez(os.path.join(label_save_path, 'labels.npz'),
+                 labels=last_labels,
+                 objframe_idx_2_label_idx=objframe_idx_2_label_idx)
+        np.save(os.path.join(label_save_path, 'timestamps_us.npy'), unique_label_times)
 
-    print(f"Number of frames processed and saved: {num_frames}")
-    print(f"Unique label frames: {len(unique_label_times)}, Mapping length: {len(objframe_idx_2_label_idx)}")
+        print(f"Number of frames processed and saved: {num_frames}")
+        print(f"Unique label frames: {len(unique_label_times)}, Mapping length: {len(objframe_idx_2_label_idx)}")
 
+if __name__ == "__main__":
+    main()
